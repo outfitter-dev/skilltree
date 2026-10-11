@@ -57,4 +57,4 @@ Status: reference notes, not implemented behavior. Requirements for a Grok Bot d
 ## Notify (proposed)
 
 - After a run that results in UPDATED, CONFLICT, HELD or ERROR, send one event. Targets: a webhook (for example, a Grok Bot routine's webhook trigger), a local command, or a report file. Include a run id for dedup. A clean run sends nothing.
-- A "Skill Gardener" bot profile could subscribe to these events, review held skills and resolve conflicts.
+- A dedicated skilltree bot (see [bot-profile.md](bot-profile.md); suggested name Skill Gardener) can subscribe to these events, review held skills and resolve conflicts.

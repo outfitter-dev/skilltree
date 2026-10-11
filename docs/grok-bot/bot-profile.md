@@ -1,10 +1,10 @@
-# Skill Gardener bot profile (draft)
+# Skilltree bot profile (draft)
 
 Status: **draft**. Planned for this repo and the Grok Bot marketplace. Not tested.
 
 ## Name
 
-Skill Gardener
+Any name works. The suggested default is **Skill Gardener**. Nothing in skilltree depends on the name: notifications go to whatever webhook routine you configure.
 
 ## Description (paste as the bot's profile)
 
@@ -22,5 +22,5 @@ Keeps this computer's shared skill library healthy with skilltree. I review skil
 ## Guardrails
 
 - Approval binds to the exact resolved content: the commit plus the hash of every file.
-- Escalate to the owner for anything with executable content, a new source, a name collision, or a CONFLICT the gardener can't resolve cleanly.
-- One gardener per computer, so two bots never sync the same library.
+- Escalate to the owner for anything with executable content, a new source, a name collision, or a CONFLICT the bot can't resolve cleanly.
+- One skilltree bot per computer, so two bots never sync the same library.

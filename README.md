@@ -16,7 +16,7 @@ This repository is an initial Bun/TypeScript scaffold. The CLI prints help and r
 
 An explicit user request to install a specific skill supplies approval within the requested scope. Autonomous discovery and later updates require an explicit user-authorized policy. Safety triage helps prioritize review; it cannot guarantee safety. Integration with a primary agent should be optional and configurable.
 
-Grok Bot notes live in `docs/grok-bot/`: [setup](docs/grok-bot/setup.md), [environment](docs/grok-bot/environment.md), and a draft [Skill Gardener profile](docs/grok-bot/gardener.md).
+Grok Bot notes live in `docs/grok-bot/`: [setup](docs/grok-bot/setup.md), [environment](docs/grok-bot/environment.md), and a draft [bot profile](docs/grok-bot/bot-profile.md).
 
 Skillset integration is deferred. Plugin ingestion does not imply that every plugin runtime feature will work in a destination environment. These are design goals, not implemented behavior.
 

@@ -23,7 +23,7 @@ Status: **proposed**. skilltree is a scaffold; none of these commands exist yet.
 
 ## Schedule
 
-There is no cron on a Grok Bot computer. Create a Grok Bot routine on the bot that owns skill hygiene (for example, Skill Gardener):
+There is no cron on a Grok Bot computer. Create a Grok Bot routine on the bot that runs skilltree (see [bot-profile.md](bot-profile.md); suggested name Skill Gardener):
 
 - **Schedule:** nightly, around 2 AM local time. Use an off-minute, not :00 or :30.
 - **Prompt (template):** "`cd /workspace/skilltree` and run `skilltree sync`. If the runner is missing, report that and stop. If the result is UPDATED, CONFLICT, HELD or ERROR, follow the `skilltree` skill. Otherwise stay silent."
