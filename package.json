@@ -24,11 +24,11 @@
     "lint": "oxlint --deny-warnings src tests scripts bin",
     "format:check": "oxfmt --check .",
     "format:fix": "oxfmt --write .",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run build",
     "setup": "bash scripts/bootstrap.sh",
     "build:compile": "bun scripts/compile.ts",
-    "test:integration": "bun test tests/integration.test.ts",
+    "test:integration": "bun test --timeout 30000 tests/integration.test.ts",
     "demo": "bun scripts/demo.ts",
     "demo:restore": "bun scripts/restore-demo.ts"
   },

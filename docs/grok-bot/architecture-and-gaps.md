@@ -46,3 +46,5 @@ Avoiding excluded names only at the state root is insufficient. Durable Git/cont
 4. Add source-isolated acquisition/reporting and bounded retention only with documented ownership and approval semantics.
 5. Run Linux x64 Node 20/native/package checks and verify actual host behavior separately. Read-only CI and container results cannot establish live integration.
 6. Configure routines, notifications, keeper hooks or live installation only through separately authorized host integration work.
+
+The Git-backed fixture suite has a bounded thirty-second per-test deadline to accommodate cold filesystems and emulated Linux verification. This changes test infrastructure only; Git operation limits, application locking and assertions are unchanged.
