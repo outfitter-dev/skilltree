@@ -1,4 +1,4 @@
-# Grok Bot destination
+# Grok Bot environment
 
 Status: reference notes, not implemented behavior. Requirements for a Grok Bot destination adapter, based on what was observed on a live Grok Bot computer on 2026-10-11. Each item is labeled **verified**, **observed** or **unknown**. None of this is implemented in skilltree yet. Paths are Grok Bot platform defaults, not anyone's personal setup.
 
