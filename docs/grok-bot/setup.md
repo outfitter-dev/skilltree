@@ -1,6 +1,6 @@
 # Setting up skilltree on Grok Bot
 
-Status: **proposed**. skilltree is a scaffold; none of these commands exist yet. This page describes the intended setup so the implementation can target it. Platform facts and their evidence are in [environment.md](environment.md).
+Status: **proposed Grok integration**. The local release candidate implements a coordinated filesystem workflow; its Grok host write route and catalog pickup remain unverified. This page describes the intended setup so the implementation can target it. Platform facts and their evidence are in [environment.md](environment.md).
 
 ## Layout
 
@@ -16,10 +16,10 @@ Status: **proposed**. skilltree is a scaffold; none of these commands exist yet.
 
 1. Confirm prerequisites: `git --version` and `node --version` (20 or newer). Both ship with the image.
 2. Install a pinned runner to `~/.local/bin/skilltree`, either a standalone build or a Node 20-compatible package.
-3. `skilltree init --home /workspace/skilltree --dest /home/box/agent-data/workflows`
-4. `skilltree add <owner/repo>` for each source. New sources start disabled, and every skill is held on first sync until approved.
+3. Configure a verified destination adapter before initializing the live host. The current `init --dest ... --exclusive-dest` supports coordinated filesystem fixtures only; the shared host path is not verified for it.
+4. Register sources and inventory exact paths. A user-requested `select --install` approves that installation; autonomous selections are held. Do not use the filesystem adapter on the live host until its write integration is verified.
 5. `skilltree doctor` should report OK for the runtime, paths, write access and lock.
-6. `skilltree sync --dry-run`, then review, approve and sync.
+6. `skilltree sync --dry-run`, then stage with `sync`, review and approve the exact candidate hash, and explicitly `apply`. Sync never deploys in this release candidate.
 
 ## Schedule
 
