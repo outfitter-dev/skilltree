@@ -22,7 +22,7 @@ Unchanged syncs reuse the active generation. Changed revisions publish fresh mat
 
 ## Destination and catalog
 
-New filesystem transactions stage and retain backups in ownership-marked sibling storage outside the destination tree, with same-device checks and versioned location-bound journals. Recursive fixture scans see only active skills. Version 1 journals still recover from their original destination-local layout. Existing completed legacy backups remain retained and diagnosed; they need deliberate ownership-aware relocation rather than broad deletion.
+New filesystem transactions stage and retain backups in ownership-marked sibling storage outside the destination tree, with same-device checks and versioned location-bound journals. Recursive fixture scans see only active skills. Version 1 journal-owned storage relocates intact outside the catalog through a restartable migration journal before recovery. Existing completed legacy backups remain retained and diagnosed; they need deliberate ownership-aware relocation rather than broad deletion.
 
 With explicit `init --host-metadata`, root host-owned `workflow.md` and `runs.json` are projected out of skill hashes/capture and preserved through replacement. Upstream-authored reserved names remain invalid. This projection does not establish a sanctioned host API or authorize uncoordinated writes.
 

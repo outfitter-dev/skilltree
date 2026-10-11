@@ -165,14 +165,8 @@ export function applyEntry(
   };
 }
 export function recover(ctx: Context, dryRun: boolean): unknown {
-  const journal = pending(ctx);
+  let journal = pending(ctx);
   if (!journal) return { outcome: "CURRENT", message: "No interrupted replacement" };
-  if (journal.version === 2) {
-    if (journal.storage !== storageRoot(ctx))
-      fail("STATE_INVALID", "Unexpected transaction storage");
-    storage(ctx, false);
-  }
-  const p = paths(ctx, journal.transaction, journal.version === 1);
   const target = targetPath(ctx, journal.id);
   const nextHash = journal.next.deployed?.hash;
   if (
@@ -183,6 +177,38 @@ export function recover(ctx: Context, dryRun: boolean): unknown {
   )
     fail("STATE_INVALID", "Invalid replacement journal");
   getObject(ctx.home, nextHash);
+  if (journal.version === 1 && exists(paths(ctx, journal.transaction, true).root)) {
+    storage(ctx, false);
+    if (exists(paths(ctx, journal.transaction).root))
+      fail("STATE_INVALID", "Legacy relocation target already exists; preserve both");
+    if (!dryRun) {
+      storage(ctx, true);
+      journal = { ...journal, version: 3, storage: storageRoot(ctx) };
+      atomicJson(join(ctx.home, "transaction.json"), journal);
+    }
+  }
+  if (journal.version === 2 || journal.version === 3) {
+    if (journal.storage !== storageRoot(ctx))
+      fail("STATE_INVALID", "Unexpected transaction storage");
+    storage(ctx, false);
+  }
+  if (journal.version === 3) {
+    const from = paths(ctx, journal.transaction, true).root;
+    const to = paths(ctx, journal.transaction).root;
+    if (exists(from) === exists(to))
+      fail("STATE_INVALID", "Ambiguous legacy relocation; preserve both paths");
+    if (!dryRun) {
+      if (exists(from)) fs.renameSync(from, to);
+      journal = { ...journal, version: 2 };
+      atomicJson(join(ctx.home, "transaction.json"), journal);
+    }
+  }
+  const p = paths(
+    ctx,
+    journal.transaction,
+    journal.version === 1 ||
+      (journal.version === 3 && exists(paths(ctx, journal.transaction, true).root)),
+  );
   const current = destinationHash(ctx, target);
   if (current === nextHash) {
     if (!dryRun) finish(ctx, journal);

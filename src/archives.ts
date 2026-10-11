@@ -193,7 +193,14 @@ export function retireSource(home: string, source: Source): void {
     )
       continue;
     const target = join(root, path);
+    try {
+      assertNoSymlinks(dirname(target));
+    } catch {
+      continue;
+    }
+    if (!exists(target)) continue;
     const stat = fs.lstatSync(target);
+    if ((mode === "120000") !== stat.isSymbolicLink()) continue;
     const expected = gitBytes(root, ["cat-file", "blob", oid!]);
     const actual = stat.isSymbolicLink()
       ? Buffer.from(fs.readlinkSync(target))

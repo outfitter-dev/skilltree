@@ -123,5 +123,6 @@ const journalFields = {
 export const journalSchema = z.discriminatedUnion("version", [
   z.object({ version: z.literal(1), ...journalFields }).strict(),
   z.object({ version: z.literal(2), storage: z.string().min(1), ...journalFields }).strict(),
+  z.object({ version: z.literal(3), storage: z.string().min(1), ...journalFields }).strict(),
 ]);
 export type Journal = z.infer<typeof journalSchema>;
