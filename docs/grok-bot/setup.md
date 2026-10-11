@@ -1,6 +1,6 @@
 # Setting up skilltree on Grok Bot
 
-Status: **proposed Grok integration**. The local release candidate implements a coordinated filesystem workflow; its Grok host write route and catalog pickup remain unverified. This page describes the intended setup so the implementation can target it. Platform facts and their evidence are in [environment.md](environment.md).
+Status: **proposed Grok integration**. The local release candidate implements a coordinated filesystem workflow; its Grok host write route and catalog pickup remain unverified. This page describes the intended setup so the implementation can target it. Platform facts and their evidence are in [environment.md](environment.md). [Architecture and gaps](architecture-and-gaps.md) records current implementation differences; the layout and routines below remain proposals.
 
 ## Layout
 

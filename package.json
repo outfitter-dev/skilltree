@@ -29,7 +29,8 @@
     "setup": "bash scripts/bootstrap.sh",
     "build:compile": "bun scripts/compile.ts",
     "test:integration": "bun test tests/integration.test.ts",
-    "demo": "bun scripts/demo.ts"
+    "demo": "bun scripts/demo.ts",
+    "demo:restore": "bun scripts/restore-demo.ts"
   },
   "dependencies": {
     "yaml": "2.8.3",

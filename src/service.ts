@@ -410,7 +410,14 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           const item = acquired.get(entry.source)!;
           return stage(ctx, entry, item.source, item.root, false, scratchRoot);
         });
-        const sources = [...acquired.values()].map((item) => publishSource(ctx.home, item));
+        const sources = [...acquired.values()].map((item) => {
+          const accepted = ctx.lock.sources.find((source) => source.id === item.source.id)!;
+          // A verified generation at the same revision needs no persistent copy.
+          // Legacy locations migrate once; changed/orphan generations stay retained.
+          return accepted.checkout && accepted.revision === item.source.revision
+            ? accepted
+            : publishSource(ctx.home, item);
+        });
         for (const item of ctx.lock.sources) sourceRoot(ctx, item);
         ctx.lock.entries = entries;
         ctx.lock.sources = sources;

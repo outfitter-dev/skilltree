@@ -29,3 +29,7 @@ Scope: one usable local/shared-filesystem workflow, not a live destination integ
 1. Durable schemas, content trees, Git acquisition/discovery and sidecar history.
 2. Inventory/selection, stage/capture/approval, safe apply/recovery and reports.
 3. Acceptance fixtures, clean packaging/runner smoke checks, demo, final diff review.
+
+## Architecture alignment
+
+Read [the Grok architecture comparison](grok-bot/architecture-and-gaps.md) before treating this slice as the full proposed product. Detached source generations plus per-skill local histories and file merges intentionally differ from a per-source working branch/rebase. Staging-only sync, portable directory locks, collection-wide fetch failure and filesystem transactions inside the library remain explicit boundaries; live adapter, routine, Linux lock and durable restore work is not complete.

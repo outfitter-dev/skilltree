@@ -341,3 +341,22 @@ for (const [name, target] of [
     }
   });
 }
+
+test("unchanged sync reuses accepted generations without discarding retained notes", () => {
+  const f = fixture();
+  try {
+    install(f.home);
+    const accepted = load(f.home).lock.sources[0]!;
+    const count = fs.readdirSync(join(f.home, "repos")).length;
+    const retained = join(f.home, "repos/unowned-notes");
+    fs.mkdirSync(retained);
+    fs.writeFileSync(join(retained, "note.txt"), "unknown work must survive");
+    for (let run = 0; run < 3; run++) execute(f.home, "sync", []);
+    expect(load(f.home).lock.sources[0]).toEqual(accepted);
+    expect(fs.readdirSync(join(f.home, "repos"))).toHaveLength(count + 1);
+    expect(fs.readFileSync(join(retained, "note.txt"), "utf8")).toBe("unknown work must survive");
+    expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });
+  } finally {
+    f.cleanup();
+  }
+});

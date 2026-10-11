@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { sourcePath } from "../src/git";
+import { git, sourcePath } from "../src/git";
 import { execute } from "../src/service";
 import { load, withLock, runtimePath } from "../src/state";
 import { applyEntry, recover } from "../src/deployment";
@@ -85,7 +85,8 @@ test("conflicting update leaves deployed bytes and local history intact", () => 
     editBody(target, "First line", "Local conflict");
     execute(f.home, "capture", ["helper"]);
     const before = liveHash(target);
-    const local = load(f.home).lock.entries[0]!.local;
+    const accepted = load(f.home).lock.entries[0]!;
+    const local = accepted.local;
     editBody(f.skill, "First line", "Upstream conflict");
     commit(f.repo, "conflict");
     execute(f.home, "sync", []);
@@ -93,6 +94,10 @@ test("conflicting update leaves deployed bytes and local history intact", () => 
     expect(entry.outcome).toBe("CONFLICT");
     expect(entry.candidate).toBeNull();
     expect(entry.local).toEqual(local);
+    expect(entry.upstream).toEqual(accepted.upstream);
+    expect(entry.approval).toEqual(accepted.approval);
+    expect(entry.deployed).toEqual(accepted.deployed);
+    expect(load(f.home).lock.sources[0]!.revision).toBe(git(f.repo, ["rev-parse", "HEAD"]));
     expect(liveHash(target)).toBe(before);
   } finally {
     f.cleanup();

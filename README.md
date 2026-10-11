@@ -60,7 +60,7 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 - `skilltree.json`: immutable destination, adapter, gardener/primary metadata, manual policy.
 - `skilltree.lock`: selections and profiles; distinct upstream, local base/hash/Git commit, candidate, approval, observed local baseline, and last deployment records.
 - `objects/`: immutable complete file snapshots, checked against their SHA-256 on use.
-- `repos/`: acquired Git sources; do not treat them as local edit workspaces. Sync fetches and validates in scratch, copies new checkout generations, then atomically publishes their references in the lock. Accepted checkouts are never advanced in place. Prior or interrupted generations are retained; there is no automatic cleanup.
+- `repos/`: acquired Git sources; do not treat them as local edit workspaces. Sync fetches and validates in scratch, copies new checkout generations, then atomically publishes their references in the lock. Accepted checkouts are never advanced in place; unchanged syncs reuse their verified generation. Prior or interrupted generations are retained; there is no automatic cleanup.
 - `edits/`: local Git histories. `capture` records local library edits here; ignored and untracked files, hidden index flags, and changed bytes or modes are preserved and block capture/apply. History updates replace only files owned by a verified recorded snapshot.
 - `reports/`: per-write JSON receipts with run IDs.
 - `transaction.json`: interrupted per-skill replacement journal, when present.
@@ -107,13 +107,13 @@ npx --yes --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
 bunx --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
 ```
 
-The Node launcher selects a prepared matching native binary when present, otherwise the bundled Node CLI. Rebuild both before packing; compiled files are platform-specific. Build artifacts are disposable; `--home` always supplies durable state. Git remains an external prerequisite. The portable workflow and launcher are verified on Node 20.19.2/macOS arm64; native execution is verified only on macOS arm64. No Linux/Grok or universal runtime guarantee is made. The package stays private to prevent accidental publication.
+The Node launcher selects a prepared matching native binary when present, otherwise the bundled Node CLI. Rebuild both before packing; compiled files are platform-specific. Build artifacts are disposable; `--home` always supplies durable state. Git remains an external prerequisite. The accepted local milestone was verified on Node 20.19.2/macOS arm64. The separate assessment workflow tests Linux x64 portable/native execution and isolated runner restore. These are compatibility fixtures; no Grok host or universal runtime guarantee is made. The package stays private to prevent accidental publication.
 
 ## Development and scope
 
 `bun run check` runs lint, formatting, strict type checks, unit/integration tests, and portable build. `bun run demo` creates and retains an isolated Git source, installs a selected skill, captures local drift, stages an upstream update, approves/applies it, and proves both edits survived. No live skill library is touched.
 
-Keep domain, content, Git, inventory, state, and deployment boundaries separate. Skillset integration remains deferred. See [AGENTS.md](AGENTS.md), [the implementation acceptance plan](docs/implementation-plan.md), and proposed [Grok setup](docs/grok-bot/setup.md), [environment](docs/grok-bot/environment.md), and [bot profile](docs/grok-bot/bot-profile.md). The Grok references do not establish a working destination adapter.
+Keep domain, content, Git, inventory, state, and deployment boundaries separate. Skillset integration remains deferred. See [AGENTS.md](AGENTS.md), [the implementation acceptance plan](docs/implementation-plan.md), and proposed [Grok setup](docs/grok-bot/setup.md), [environment](docs/grok-bot/environment.md), and [bot profile](docs/grok-bot/bot-profile.md). The Grok references do not establish a working destination adapter. [Architecture and gaps](docs/grok-bot/architecture-and-gaps.md) explains the branch/merge model, lock and catalog differences, and the next isolated integration slice. `bun run demo:restore` checks disposable runner restoration and incomplete-snapshot holds without installing a live hook.
 
 Licensed under the [MIT License](LICENSE).
 
