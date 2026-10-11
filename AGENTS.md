@@ -5,6 +5,7 @@ Skilltree is a development scaffold for a proposed Git-backed skill sync CLI. Re
 ## Commands
 
 ```sh
+bun run setup
 bun install --frozen-lockfile
 bun run dev -- --help
 bun run check
@@ -31,8 +32,10 @@ bun run format:fix
 
 ## Public repository boundaries
 
-Keep private planning notes, personal identities, machine paths, credentials, environment audits, and coordination transcripts out of tracked files. Review new files and dependency metadata before public pushes.
+Keep private planning notes, personal details beyond the authorized license attribution, machine paths, credentials, environment audits, and coordination transcripts out of tracked files. Review new files and dependency metadata before public pushes.
 
-Do not publish packages, configure credentials, alter organization access/security, or add release/deployment workflows without explicit authorization. License selection is pending; do not choose one by assumption.
+Do not publish packages, configure credentials, alter organization access/security, or add release/deployment workflows without explicit authorization. The project uses the MIT License; preserve its notice.
 
 `AGENTS.md` is canonical; keep `CLAUDE.md` as a symlink to it.
+
+For new worktrees, `bash scripts/bootstrap.sh` validates checkout-local instructions, requires the existing pinned Bun runtime, installs frozen dependencies without lifecycle scripts, and runs `check`. Configure Orca to wait for successful setup before starting an agent. Setup must never copy credentials, change global settings, or launch an agent.

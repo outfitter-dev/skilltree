@@ -39,4 +39,10 @@ bun run format:fix
 
 Source lives in `src/` and tests in `tests/`. Keep modules focused as behavior develops; introduce workspaces only when independent package boundaries justify them. There are no dependencies on neighboring checkouts.
 
-See [AGENTS.md](AGENTS.md) for contributor guidance. License selection is pending; this repository does not yet include a license grant.
+See [AGENTS.md](AGENTS.md) for contributor guidance. Licensed under the [MIT License](LICENSE).
+
+## Worktree setup
+
+Run `bun run setup` (or `bash scripts/bootstrap.sh`) in a new checkout. Setup validates the pinned Bun runtime and local `CLAUDE.md` symlink, installs frozen dependencies with lifecycle scripts disabled, and runs the scaffold checks. It does not download a runtime or launch agents.
+
+For Orca, configure the project setup command as `bash scripts/bootstrap.sh` and choose agent startup after setup succeeds. Keep the archive command empty; this scaffold needs no teardown hook.

@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "A scaffold for Git-backed skill synchronization that preserves local edits.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "bun src/cli.ts",
@@ -12,7 +13,8 @@
     "format:check": "oxfmt --check .",
     "format:fix": "oxfmt --write .",
     "test": "bun test",
-    "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run build"
+    "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run build",
+    "setup": "bash scripts/bootstrap.sh"
   },
   "devDependencies": {
     "@types/bun": "1.4.0",
