@@ -16,6 +16,8 @@ This repository is an initial Bun/TypeScript scaffold. The CLI prints help and r
 
 An explicit user request to install a specific skill supplies approval within the requested scope. Autonomous discovery and later updates require an explicit user-authorized policy. Safety triage helps prioritize review; it cannot guarantee safety. Integration with a primary agent should be optional and configurable.
 
+Destination-specific reference notes live in `docs/destinations/`; see [Grok Bot](docs/destinations/grok-bot.md).
+
 Skillset integration is deferred. Plugin ingestion does not imply that every plugin runtime feature will work in a destination environment. These are design goals, not implemented behavior.
 
 The proposed package name is `@outfitter/skilltree`. Compiled distribution through `npx` or `bunx` remains a future packaging decision, subject to platform testing.
