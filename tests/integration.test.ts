@@ -401,8 +401,10 @@ test("modified acquired sources are preserved and cannot be mislabeled upstream"
   try {
     const changed = join(f.home, "repos/upstream/.agents/skills/helper/SKILL.md");
     fs.appendFileSync(changed, "Uncommitted source work\n");
-    expect(() => install(f.home)).toThrow("changed outside");
-    expect(() => execute(f.home, "sync", [])).toThrow("Preserve changes");
+    expect(() => install(f.home)).toThrow(expect.objectContaining({ code: "SOURCE_DIRTY" }));
+    expect(() => execute(f.home, "sync", [])).toThrow(
+      expect.objectContaining({ code: "SOURCE_DIRTY" }),
+    );
     expect(fs.readFileSync(changed, "utf8")).toContain("Uncommitted source work");
   } finally {
     f.cleanup();

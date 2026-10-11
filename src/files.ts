@@ -51,7 +51,7 @@ export function readJson(path: string): unknown {
   assertNoSymlinks(path);
   return JSON.parse(fs.readFileSync(path, "utf8"));
 }
-export function readTree(root: string): Tree {
+export function readTree(root: string, excludeRootGitMetadata = false): Tree {
   assertNoSymlinks(root);
   if (!fs.statSync(root).isDirectory()) fail("UNSAFE_TREE", "Skill root is not a directory");
   const tree: Tree = Object.create(null);
@@ -59,6 +59,7 @@ export function readTree(root: string): Tree {
   let count = 0;
   function walk(dir: string, prefix: string) {
     for (const name of fs.readdirSync(dir).sort()) {
+      if (excludeRootGitMetadata && !prefix && name === ".git") continue;
       const path = join(dir, name);
       const rel = prefix ? `${prefix}/${name}` : name;
       if ([".git", "node_modules", "workflow.md", "runs.json"].includes(name))

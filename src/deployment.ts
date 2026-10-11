@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { fail, type Entry, type Journal } from "./model";
 import { atomicJson, assertNoSymlinks, exists, getObject, liveHash, writeTree } from "./files";
 import { pending, save, type Context } from "./state";
-import { recordLocal } from "./git";
+import { preflightLocal, recordLocal } from "./git";
 
 export function expectedLive(entry: Entry): string | null {
   return entry.observed ?? entry.deployed?.hash ?? null;
@@ -44,6 +44,7 @@ export function applyEntry(
       oldHash ? "DRIFT" : "COLLISION",
       "Destination differs from the accepted ownership baseline; capture or reconcile it first",
     );
+  preflightLocal(ctx.home, entry.id, entry.local);
   if (entry.deployed?.hash === requestedHash && !entry.observed)
     return { id: entry.id, outcome: "CURRENT", hash: requestedHash };
   if (dryRun) return { id: entry.id, outcome: "WOULD_APPLY", hash: requestedHash };
@@ -59,7 +60,7 @@ export function applyEntry(
     next.local = {
       hash: requestedHash,
       base: entry.upstream.hash,
-      commit: recordLocal(ctx.home, entry.id, tree),
+      commit: recordLocal(ctx.home, entry.id, tree, entry.local),
     };
   const transaction = randomUUID();
   const p = paths(ctx, transaction);

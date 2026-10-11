@@ -16,7 +16,14 @@ import {
   treeHash,
   triage,
 } from "./files";
-import { acquire, mergeTrees, recordLocal, repository, git } from "./git";
+import {
+  acquire,
+  mergeTrees,
+  recordLocal,
+  repository,
+  preflightLocal,
+  preflightSource,
+} from "./git";
 import { discover, metadata, metadataTree } from "./discovery";
 import { load, pending, save, unlock, withLock, type Context } from "./state";
 import { applyEntry, expectedLive, recover, targetPath } from "./deployment";
@@ -49,16 +56,8 @@ function selection(ctx: Context, id: string): Entry {
   return entry;
 }
 function sourceRoot(ctx: Context, item: Source): string {
-  const root = assertNoSymlinks(join(ctx.home, "repos", item.id));
-  assertNoSymlinks(join(root, ".git"));
-  if (
-    git(root, ["rev-parse", "HEAD"]) !== item.revision ||
-    git(root, ["status", "--porcelain", "--untracked-files=all", "--ignored"])
-  )
-    fail(
-      "SOURCE_DIRTY",
-      "Acquired source changed outside Skilltree; preserve and reconcile it first",
-    );
+  const root = join(ctx.home, "repos", item.id);
+  preflightSource(root, item.repository, item.revision);
   return root;
 }
 function source(ctx: Context, id: string): Source {
@@ -256,14 +255,7 @@ export function execute(
     }
     for (const entry of ctx.lock.entries) {
       try {
-        if (entry.local) {
-          const history = assertNoSymlinks(join(ctx.home, "edits", entry.id));
-          assertNoSymlinks(join(history, ".git"));
-          if (git(history, ["cat-file", "-t", entry.local.commit]) !== "commit")
-            issues.push(`${entry.id}: local Git provenance is missing`);
-          if (git(history, ["status", "--porcelain"]))
-            issues.push(`${entry.id}: local history has uncommitted work`);
-        }
+        preflightLocal(ctx.home, entry.id, entry.local);
         for (const digest of [
           entry.upstream.hash,
           entry.local?.hash,
@@ -374,6 +366,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
   }
   if (command === "sync")
     return scratch((scratchRoot) => {
+      for (const item of ctx.lock.sources) sourceRoot(ctx, item);
       const acquired = new Map<string, { source: Source; root: string }>();
       for (const s of ctx.lock.sources) {
         const home = dryRun ? join(scratchRoot, s.id) : ctx.home;
@@ -412,12 +405,13 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
       fail("IDENTITY_CHANGED", "Live skill identity changed; reconcile deliberately");
     const tree = readTree(target);
     const digest = treeHash(tree);
+    preflightLocal(ctx.home, entry.id, entry.local);
     if (!dryRun) {
       putObject(ctx.home, tree);
       entry.local = {
         hash: digest,
         base: entry.deployedBase ?? entry.upstream.hash,
-        commit: recordLocal(ctx.home, entry.id, tree),
+        commit: recordLocal(ctx.home, entry.id, tree, entry.local),
       };
       entry.observed = digest;
       entry.candidate = null;

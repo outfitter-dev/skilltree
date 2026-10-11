@@ -61,7 +61,7 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 - `skilltree.lock`: selections and profiles; distinct upstream, local base/hash/Git commit, candidate, approval, observed local baseline, and last deployment records.
 - `objects/`: immutable complete file snapshots, checked against their SHA-256 on use.
 - `repos/`: acquired Git sources; do not treat them as local edit workspaces.
-- `edits/`: local Git histories. `capture` records local library edits here; dirty history checkouts are preserved and block capture/apply rather than being cleared.
+- `edits/`: local Git histories. `capture` records local library edits here; ignored and untracked files, hidden index flags, and changed bytes or modes are preserved and block capture/apply. History updates replace only files owned by a verified recorded snapshot.
 - `reports/`: per-write JSON receipts with run IDs.
 - `transaction.json`: interrupted per-skill replacement journal, when present.
 
@@ -78,7 +78,7 @@ bun run dev -- recover --home /absolute/collection --unlock
 
 `doctor` is check-only. Interrupted transactions block other state writes until explicit recovery. Recovery either completes an already installed approved snapshot, restores retained previous bytes, or retains an unchanged destination. Unknown current bytes are held for manual reconciliation. `--unlock` removes a stale lock only after proving its process has exited; an unreadable owner or reused/live PID needs manual inspection. A crash before the lock owner record is written needs manual inspection too. Atomic records and recovery do not guarantee snapshot durability or prevent all external-write races; use coordinated destination access.
 
-All state-writing commands have `--dry-run`. Dry runs may acquire sources and merge files in isolated temporary storage, but do not alter manifests, approval records, sources, histories, reports, or library bytes. `status`, `list`, `inventory`, `verify`, and `doctor` are read-only.
+All state-writing commands have `--dry-run`. Dry capture/apply perform the same history preflights as real writes; dry sync checks the durable acquired source before fetching into scratch storage. Dry runs may acquire sources and merge files in isolated temporary storage, but do not alter manifests, approval records, sources, histories, reports, or library bytes. `status`, `list`, `inventory`, `verify`, and `doctor` are read-only.
 
 ## Source adapters
 

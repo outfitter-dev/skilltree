@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import { join, resolve } from "node:path";
-import { fail, type Source, type Tree } from "./model";
-import { exists, assertNoSymlinks, treeHash, writeTree } from "./files";
+import { dirname, join, resolve } from "node:path";
+import { fail, type Entry, type Source, type Tree } from "./model";
+import { exists, assertNoSymlinks, treeHash, writeTree, readTree, getObject } from "./files";
 
 export function gitEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -67,38 +67,114 @@ export function acquire(home: string, id: string, repo: string, ref: string): So
   const newClone = !exists(dir);
   if (newClone)
     git(home, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", "--", repo, dir]);
-  else if (git(dir, ["remote", "get-url", "origin"]) !== repo)
-    fail("SOURCE_MISMATCH", "Acquired repository remote changed");
-  assertNoSymlinks(join(dir, ".git"));
-  if (git(dir, ["rev-parse", "--show-toplevel"]) !== dir)
-    fail("SOURCE_MISMATCH", "Acquired source belongs to another checkout");
-  if (!newClone && git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignored"]))
-    fail("SOURCE_DIRTY", "Preserve changes in the acquired source before syncing");
+  if (!newClone) preflightSource(dir, repo);
   git(dir, ["fetch", "--no-tags", "origin", ref]);
   const revision = git(dir, ["rev-parse", "FETCH_HEAD^{commit}"]);
   git(dir, ["checkout", "--detach", revision]);
   return { id, repository: repo, ref, revision };
 }
-export function recordLocal(home: string, id: string, tree: Tree): string {
-  const dir = join(home, "edits", id);
+// These preflights only read durable state, including ignored files and index flags.
+export function preflightSource(dir: string, repo: string, revision?: string): void {
   assertNoSymlinks(dir);
-  if (!exists(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    git(dir, ["init", "-b", "skilltree-local"]);
-  }
   assertNoSymlinks(join(dir, ".git"));
-  if (git(dir, ["rev-parse", "--show-toplevel"]) !== dir)
-    fail("LOCAL_HISTORY_INVALID", "Local history belongs to another checkout");
-  if (git(dir, ["status", "--porcelain"]))
+  if (
+    !fs.statSync(join(dir, ".git")).isDirectory() ||
+    git(dir, ["rev-parse", "--show-toplevel"]) !== dir ||
+    resolve(dir, git(dir, ["rev-parse", "--git-common-dir"])) !== join(dir, ".git") ||
+    git(dir, ["remote", "get-url", "origin"]) !== repo
+  )
+    fail("SOURCE_MISMATCH", "Acquired source belongs to another repository");
+  const concealed = git(dir, ["ls-files", "-v", "-z"])
+    .split("\0")
+    .some((line) => line && (line[0] === "S" || /[a-z]/.test(line[0]!)));
+  if (
+    (revision && git(dir, ["rev-parse", "HEAD"]) !== revision) ||
+    concealed ||
+    git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignored"])
+  )
+    fail(
+      "SOURCE_DIRTY",
+      "Acquired source changed outside Skilltree; preserve and reconcile it before syncing",
+    );
+}
+
+export function preflightLocal(home: string, id: string, local: Entry["local"]): Tree | null {
+  const dir = assertNoSymlinks(join(home, "edits", id));
+  if (!exists(dir)) {
+    if (local) fail("LOCAL_HISTORY_INVALID", "Recorded local history is missing");
+    return null;
+  }
+  if (!local) fail("LOCAL_HISTORY_INVALID", "Unrecognized local history must be reconciled first");
+  assertNoSymlinks(join(dir, ".git"));
+  let previous: Tree;
+  try {
+    if (
+      !fs.statSync(join(dir, ".git")).isDirectory() ||
+      git(dir, ["rev-parse", "--show-toplevel"]) !== dir ||
+      resolve(dir, git(dir, ["rev-parse", "--git-common-dir"])) !== join(dir, ".git") ||
+      git(dir, ["cat-file", "-t", local.commit]) !== "commit"
+    )
+      fail("LOCAL_HISTORY_INVALID", "Local history belongs to another checkout");
+    git(dir, ["merge-base", "--is-ancestor", local.commit, "HEAD"]);
+    // Recovery can leave a generated commit ahead of the accepted lock entry.
+    // Validate that commit against its immutable object before reusing its files.
+    const match = /^Capture content ([a-f0-9]{64})$/.exec(git(dir, ["log", "-1", "--format=%s"]));
+    if (!match) fail("LOCAL_HISTORY_INVALID", "Local history has an unrecognized commit");
+    previous = getObject(home, match[1]!);
+  } catch {
+    return fail("LOCAL_HISTORY_INVALID", "Local Git provenance is missing or unrecognized");
+  }
+  const concealed = git(dir, ["ls-files", "-v", "-z"])
+    .split("\0")
+    .some((line) => line && (line[0] === "S" || /[a-z]/.test(line[0]!)));
+  if (concealed || git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignored"]))
     fail(
       "LOCAL_HISTORY_DIRTY",
       "Preserve and reconcile edits in local history before capture/apply",
     );
-  // This directory is exclusively generated history, never an upstream checkout.
-  for (const name of fs.readdirSync(dir))
-    if (name !== ".git") fs.rmSync(join(dir, name), { recursive: true });
+  // Compare bytes and modes directly: assume-unchanged/skip-worktree can hide edits.
+  try {
+    const tracked = git(dir, ["ls-files", "-z"]).split("\0").filter(Boolean).sort();
+    if (
+      JSON.stringify(tracked) !== JSON.stringify(Object.keys(previous).sort()) ||
+      treeHash(readTree(dir, true)) !== treeHash(previous)
+    )
+      fail("LOCAL_HISTORY_DIRTY", "Local history content differs from its recorded snapshot");
+  } catch {
+    return fail(
+      "LOCAL_HISTORY_DIRTY",
+      "Preserve and reconcile local history files before capture/apply",
+    );
+  }
+  return previous;
+}
+
+export function recordLocal(home: string, id: string, tree: Tree, local: Entry["local"]): string {
+  const previous = preflightLocal(home, id, local);
+  const dir = join(home, "edits", id);
+  if (!previous) {
+    fs.mkdirSync(dir, { recursive: true });
+    git(dir, ["init", "-b", "skilltree-local"]);
+  }
+  // Remove only files proven to belong to the generated snapshot. New unrelated
+  // files appearing after preflight are never recursively cleared.
+  const parents = new Set<string>();
+  for (const path of Object.keys(previous ?? {})) {
+    const target = join(dir, path);
+    fs.unlinkSync(target);
+    for (let parent = dirname(target); parent !== dir; parent = dirname(parent))
+      parents.add(parent);
+  }
+  for (const parent of [...parents].sort((a, b) => b.length - a.length)) {
+    try {
+      fs.rmdirSync(parent);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY") throw error;
+    }
+  }
   writeTree(dir, tree);
-  git(dir, ["add", "--all", "--force"]);
+  const owned = [...new Set([...Object.keys(previous ?? {}), ...Object.keys(tree)])];
+  git(dir, ["add", "--all", "--force", "--", ...owned]);
   git(dir, ["commit", "--allow-empty", "-m", `Capture content ${treeHash(tree)}`]);
   return git(dir, ["rev-parse", "HEAD"]);
 }
