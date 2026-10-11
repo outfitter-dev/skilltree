@@ -165,19 +165,17 @@ test("literal support filenames and deletions produce complete committed snapsho
     execute(f.home, "capture", ["helper"]);
     const history = join(f.home, "edits/helper");
     let entry = load(f.home).lock.entries[0]!;
-    expect(treeHash(committedTree(history, entry.local!.commit))).toBe(entry.local!.hash);
-    expect(Object.keys(committedTree(history, entry.local!.commit))).toContain("SKILL.md");
-    for (const name of names)
-      expect(Object.keys(committedTree(history, entry.local!.commit))).toContain(name);
+    const captured = committedTree(history, entry.local!.commit);
+    expect(treeHash(captured)).toBe(entry.local!.hash);
+    expect(Object.keys(captured)).toContain("SKILL.md");
+    for (const name of names) expect(Object.keys(captured)).toContain(name);
     expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });
     for (const name of names.slice(0, 4)) fs.unlinkSync(join(f.dest, "helper", name));
     execute(f.home, "capture", ["helper"]);
     entry = load(f.home).lock.entries[0]!;
-    expect(treeHash(committedTree(history, entry.local!.commit))).toBe(
-      treeHash(readTree(join(f.dest, "helper"))),
-    );
-    for (const name of names.slice(0, 4))
-      expect(Object.keys(committedTree(history, entry.local!.commit))).not.toContain(name);
+    const recaptured = committedTree(history, entry.local!.commit);
+    expect(treeHash(recaptured)).toBe(treeHash(readTree(join(f.dest, "helper"))));
+    for (const name of names.slice(0, 4)) expect(Object.keys(recaptured)).not.toContain(name);
     expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });
   } finally {
     f.cleanup();
@@ -229,3 +227,117 @@ test("failed initial add can retry and legacy source locations remain compatible
     f.cleanup();
   }
 });
+
+function repositoryLinks(repo: string) {
+  fs.writeFileSync(join(repo, "README.md"), "Repository notes\n");
+  fs.mkdirSync(join(repo, "docs/nested"), { recursive: true });
+  fs.mkdirSync(join(repo, "shared"));
+  fs.writeFileSync(join(repo, "shared/notes.md"), "Shared notes\n");
+  const links = {
+    "CLAUDE.md": "README.md",
+    "docs/nested/readme.md": "../../README.md",
+    "docs/shared": "../shared",
+  };
+  for (const [name, target] of Object.entries(links)) fs.symlinkSync(target, join(repo, name));
+  commit(repo, "repository metadata links");
+  return links;
+}
+
+function expectRepositoryLinks(root: string, links: Record<string, string>) {
+  for (const [name, target] of Object.entries(links)) {
+    expect(fs.readlinkSync(join(root, name))).toBe(target);
+    expect(fs.existsSync(join(root, name))).toBe(true);
+  }
+  expect(git(root, ["status", "--porcelain", "--untracked-files=all", "--ignored"])).toBe("");
+}
+
+test("add preserves root and nested repository symlinks verbatim outside selected skills", () => {
+  const f = fixture();
+  try {
+    const links = repositoryLinks(f.repo);
+    const before = authoritative(f.home);
+    expect(
+      execute(f.home, "add", [f.repo], { source: "links", ref: "main", dryRun: true }),
+    ).toMatchObject({ outcome: "WOULD_ADD" });
+    expect(authoritative(f.home)).toBe(before);
+    execute(f.home, "add", [f.repo], { source: "links", ref: "main" });
+    const source = load(f.home).lock.sources.find((item) => item.id === "links")!;
+    expectRepositoryLinks(sourcePath(f.home, source), links);
+    expect(source.revision).toBe(git(f.repo, ["rev-parse", "HEAD"]));
+    execute(f.home, "select", ["links"], {
+      path: ".agents/skills/helper",
+      id: "linked-helper",
+      install: true,
+      reason: "Explicit installation of a skill from a linked repository",
+    });
+    expect(fs.existsSync(join(f.dest, "linked-helper/SKILL.md"))).toBe(true);
+    expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("sync preserves newly introduced repository links and dry runs leave state unchanged", () => {
+  const f = fixture();
+  try {
+    install(f.home);
+    const accepted = load(f.home).lock.sources[0]!;
+    const links = repositoryLinks(f.repo);
+    const before = authoritative(f.home);
+    expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({ outcome: "DRY_RUN" });
+    expect(authoritative(f.home)).toBe(before);
+    execute(f.home, "sync", []);
+    const current = load(f.home).lock.sources[0]!;
+    expectRepositoryLinks(sourcePath(f.home, current), links);
+    expect(current.revision).toBe(git(f.repo, ["rev-parse", "HEAD"]));
+    expect(git(sourcePath(f.home, accepted), ["rev-parse", "HEAD"])).toBe(accepted.revision);
+    expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });
+    const after = authoritative(f.home);
+    expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({ outcome: "DRY_RUN" });
+    expect(authoritative(f.home)).toBe(after);
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const [name, target] of [
+  ["outside.md", "../../../README.md"],
+  ["support", "../../../shared"],
+]) {
+  test(`repository acquisition still rejects selected-skill symlinks: ${name}`, () => {
+    const f = fixture();
+    try {
+      install(f.home);
+      repositoryLinks(f.repo);
+      fs.symlinkSync(target!, join(f.skill, name!));
+      commit(f.repo, "unsupported selected skill link");
+      const before = authoritative(f.home);
+      for (const dryRun of [true, false]) {
+        expect(() => execute(f.home, "sync", [], { dryRun })).toThrow(
+          expect.objectContaining({ code: "UNSAFE_TREE" }),
+        );
+        expect(authoritative(f.home)).toBe(before);
+      }
+      execute(f.home, "add", [f.repo], { source: "unsafe", ref: "main" });
+      expectRepositoryLinks(
+        sourcePath(f.home, load(f.home).lock.sources.find((s) => s.id === "unsafe")!),
+        {
+          [".agents/skills/helper/" + name!]: target!,
+        },
+      );
+      const added = authoritative(f.home);
+      for (const dryRun of [true, false]) {
+        expect(() =>
+          execute(f.home, "select", ["unsafe"], {
+            path: ".agents/skills/helper",
+            id: "unsafe-helper",
+            dryRun,
+          }),
+        ).toThrow(expect.objectContaining({ code: "UNSAFE_TREE" }));
+        expect(authoritative(f.home)).toBe(added);
+      }
+    } finally {
+      f.cleanup();
+    }
+  });
+}

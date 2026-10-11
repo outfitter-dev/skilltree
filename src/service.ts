@@ -73,6 +73,8 @@ function publishSource(home: string, item: { source: Source; root: string }): So
       recursive: true,
       force: false,
       errorOnExist: true,
+      dereference: false,
+      verbatimSymlinks: true,
     });
   preflightSource(root, source.repository, source.revision);
   return source;

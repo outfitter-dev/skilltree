@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { git } from "../src/git";
+import { git, sourcePath } from "../src/git";
+import { load } from "../src/state";
 
 const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "skilltree-demo-")));
 const repo = join(root, "upstream"),
@@ -14,6 +15,10 @@ fs.writeFileSync(
   join(skill, "SKILL.md"),
   "---\nname: helper\ndescription: Demo helper\n---\nFirst line\n\nMiddle line\n\nLast line\n",
 );
+fs.writeFileSync(join(repo, "README.md"), "Demo repository notes\n");
+fs.symlinkSync("README.md", join(repo, "CLAUDE.md"));
+fs.mkdirSync(join(repo, "docs"));
+fs.symlinkSync("../README.md", join(repo, "docs/readme.md"));
 git(repo, ["init", "-b", "main"]);
 git(repo, ["add", "--all"]);
 git(repo, ["commit", "-m", "demo source"]);
@@ -80,4 +85,11 @@ const final = fs.readFileSync(target, "utf8");
 if (!final.includes("Local first") || !final.includes("Upstream last"))
   throw new Error("Demo lost an edit");
 console.log("content: local and upstream edits preserved");
+const acquired = sourcePath(home, load(home).lock.sources[0]!);
+if (
+  fs.readlinkSync(join(acquired, "CLAUDE.md")) !== "README.md" ||
+  fs.readlinkSync(join(acquired, "docs/readme.md")) !== "../README.md"
+)
+  throw new Error("Repository symlink text changed during acquisition");
+console.log("repository: relative symlinks preserved");
 console.log(`Retained isolated demo: ${root}`);
