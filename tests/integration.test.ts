@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { git, sourcePath } from "../src/git";
 import { execute } from "../src/service";
-import { load, withLock, runtimePath } from "../src/state";
-import { applyEntry, recover } from "../src/deployment";
+import { pending, load, withLock, runtimePath } from "../src/state";
+import { paths, applyEntry, recover } from "../src/deployment";
 import { atomicJson, liveHash } from "../src/files";
 import {
   fixture,
@@ -221,14 +221,8 @@ test("host writes during replacement are retained and recovered", () => {
     expect(() =>
       withLock(ctx, () =>
         applyEntry(ctx, ctx.lock.entries[0]!, candidate(f.home), false, () => {
-          const transaction = fs
-            .readdirSync(f.dest)
-            .find(
-              (name) =>
-                name.startsWith(".skilltree-transaction-") &&
-                fs.existsSync(join(f.dest, name, "backup")),
-            )!;
-          editBody(join(f.dest, transaction, "backup"), "First line", "Host write");
+          const journal = pending(ctx)!;
+          editBody(paths(ctx, journal.transaction).backup, "First line", "Host write");
         }),
       ),
     ).toThrow("Concurrent write");

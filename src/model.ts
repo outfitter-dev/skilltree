@@ -66,7 +66,13 @@ export const entrySchema = z
     profiles: z.array(slug),
     upstream: version,
     local: z
-      .object({ hash, base: hash, commit: z.string().regex(/^[a-f0-9]{40,64}$/) })
+      .object({
+        hash,
+        base: hash,
+        commit: z.string().regex(/^[a-f0-9]{40,64}$/),
+        archive: hash.optional(),
+        checkout: z.string().uuid().optional(),
+      })
       .strict()
       .nullable(),
     candidate: version.nullable(),
@@ -86,6 +92,7 @@ export const sourceSchema = z
     ref: z.string().min(1),
     revision: z.string().regex(/^[a-f0-9]{40,64}$/),
     checkout: z.string().uuid().optional(),
+    archive: hash.optional(),
   })
   .strict();
 export type Source = z.infer<typeof sourceSchema>;
@@ -98,6 +105,8 @@ export const manifestSchema = z
     version: z.literal(1),
     destination: z.string().min(1),
     adapter: z.literal("filesystem"),
+    lockBackend: z.enum(["mkdir", "flock"]).optional(),
+    hostMetadata: z.array(z.enum(["workflow.md", "runs.json"])).optional(),
     exclusiveDestination: z.literal(true),
     gardener: slug,
     primary: slug.nullable(),
@@ -105,13 +114,14 @@ export const manifestSchema = z
   })
   .strict();
 export type Manifest = z.infer<typeof manifestSchema>;
-export const journalSchema = z
-  .object({
-    version: z.literal(1),
-    transaction: z.string().uuid(),
-    id: slug,
-    oldHash: hash.nullable(),
-    next: entrySchema,
-  })
-  .strict();
+const journalFields = {
+  transaction: z.string().uuid(),
+  id: slug,
+  oldHash: hash.nullable(),
+  next: entrySchema,
+};
+export const journalSchema = z.discriminatedUnion("version", [
+  z.object({ version: z.literal(1), ...journalFields }).strict(),
+  z.object({ version: z.literal(2), storage: z.string().min(1), ...journalFields }).strict(),
+]);
 export type Journal = z.infer<typeof journalSchema>;

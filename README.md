@@ -62,12 +62,17 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 - `objects/`: immutable complete file snapshots, checked against their SHA-256 on use.
 - `repos/`: acquired Git sources; do not treat them as local edit workspaces. Sync fetches and validates in scratch, copies new checkout generations, then atomically publishes their references in the lock. Accepted checkouts are never advanced in place; unchanged syncs reuse their verified generation. Prior or interrupted generations are retained; there is no automatic cleanup.
 - `edits/`: local Git histories. `capture` records local library edits here; ignored and untracked files, hidden index flags, and changed bytes or modes are preserved and block capture/apply. History updates replace only files owned by a verified recorded snapshot.
+- `archives/`, `archive-objects/`, `git-objects/`: digest-bound archive manifests, deduplicated durable Git objects and shared derived Git object storage. File-based objects avoid excluded directory names inside committed sources.
 - `reports/`: per-write JSON receipts with run IDs.
 - `transaction.json`: interrupted per-skill replacement journal, when present.
 
-Keep the entire state directory, including objects and local history, backed up. Manifest/lock files alone cannot recover local patches. Do not store credentials in source URLs or state. Credential-bearing HTTPS URLs are rejected; public HTTPS and local Git sources are supported.
+Keep the entire state directory, including archives, objects and local history, backed up. Manifest/lock files alone cannot recover local patches. Do not store credentials in source URLs or state. Credential-bearing HTTPS URLs are rejected; public HTTPS and local Git sources are supported.
 
-Apply stages beside the destination, retains previous nonempty directories under `.skilltree-transaction-*`, and rechecks live hashes before and after replacement. Transactions cover one skill, not the whole collection. Backups are retained; there is no automatic cleanup. A runtime directory lock keyed by destination lives under the OS temporary directory, outside durable state. It serializes Skilltree writers, not host writes.
+Apply stages and retains backups in owned `.skilltree-storage-<destination-hash>` storage beside the destination, outside its catalog tree and on the same filesystem. Version 1 journals still recover from their original destination-local transaction paths. Existing legacy backups remain retained; `doctor` reports them for deliberate migration. Transactions cover one skill. No backup/history garbage collector is enabled.
+
+New Linux collections use util-linux `flock` on a stable destination-keyed inode under canonical `/tmp/skilltree-runtime`, independent of `TMPDIR`. Git children inherit the lock descriptor, retaining exclusion if they outlive the parent. Kernel locks release on final descriptor closure. macOS and legacy collections use explicit stale-recovered directory locking; `init --lock-backend mkdir|flock` chooses the backend. Stop older versions before upgrading locking domains. Runtime directory deletion while writers run invalidates coordination; platform lifetime still needs host verification. These locks coordinate Skilltree writers, not host applications.
+
+Use `init --host-metadata` only when the host owns root `workflow.md` and `runs.json`. These regular files are excluded from skill hashes/capture and preserved through replacement and backups. Skill-authored reserved names remain rejected; unowned host directories are never adopted. Other host files or symlinks hold for explicit adapter reconciliation.
 
 ```sh
 bun run dev -- doctor --home /absolute/collection
@@ -79,6 +84,20 @@ bun run dev -- recover --home /absolute/collection --unlock
 `doctor` is check-only. Interrupted transactions block other state writes until explicit recovery. Recovery either completes an already installed approved snapshot, restores retained previous bytes, or retains an unchanged destination. Unknown current bytes are held for manual reconciliation. `--unlock` removes a stale lock only after proving its process has exited; an unreadable owner or reused/live PID needs manual inspection. A crash before the lock owner record is written needs manual inspection too. Atomic records and recovery do not guarantee snapshot durability or prevent all external-write races; use coordinated destination access.
 
 All state-writing commands have `--dry-run`. Dry capture/apply perform the same history preflights as real writes; dry sync checks the durable acquired source before fetching into scratch storage. Dry runs may acquire sources and merge files in isolated temporary storage, but do not alter manifests, approval records, sources, histories, reports, or library bytes. `status`, `list`, `inventory`, `verify`, and `doctor` are read-only.
+
+## Source failures, events and restoration
+
+Sync isolates acquisition/validation failures by source. Successful source observations and their skill candidates publish together in one atomic lock update; failed sources keep their prior source and skill records. Deployment remains per skill and requires explicit approval/apply. JSON reports expose named source errors and versioned `skill.held`, `skill.conflict`, `skill.drift` and `source.error` events. CLI operation failures emit `operation.error`; integrations can consume these records without Skilltree sending messages. A partial real sync exits nonzero. Single-source errors preserve their established error codes and identify the source.
+
+Sources record observed fetched revisions; each skill records accepted reconciliation, local base, approval and deployment separately. A conflict can retain its older accepted skill revision while the source observation advances. That distinction never authorizes deployment.
+
+New acquisition/capture operations archive accepted Git provenance before publishing its reference. Use `archive` to migrate intact legacy state. `restore --dry-run` validates archives/provenance and existing work; `restore` materializes fresh generations offline and preserves old paths, approvals and deployed bytes. Missing generated files are recoverable; modified/staged/unknown work holds for reconciliation. Corrupt/missing archives hold without network fallback. This cannot recover unsnapshotted edits or prove a platform's real snapshot service.
+
+```sh
+bun run dev -- archive --home /absolute/collection
+bun run dev -- restore --home /absolute/collection --dry-run
+bun run dev -- restore --home /absolute/collection
+```
 
 ## Source adapters
 
@@ -109,11 +128,21 @@ bunx --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
 
 The Node launcher selects a prepared matching native binary when present, otherwise the bundled Node CLI. Rebuild both before packing; compiled files are platform-specific. Build artifacts are disposable; `--home` always supplies durable state. Git remains an external prerequisite. The accepted local milestone was verified on Node 20.19.2/macOS arm64. The separate assessment workflow tests Linux x64 portable/native execution and isolated runner restore. These are compatibility fixtures; no Grok host or universal runtime guarantee is made. The package stays private to prevent accidental publication.
 
+A standalone local install needs an approved portable artifact, its SHA256 and an explicit supported Node executable. It downloads nothing and installs no service or hook:
+
+```sh
+node bin/install.mjs --prefix /absolute/runner --artifact /absolute/approved-cli.mjs --sha256 <reviewed-sha256> --node /absolute/node
+/absolute/runner/bin/skilltree --help
+node bin/install.mjs --prefix /absolute/runner --restore
+```
+
+The receipt and verified artifact are durable; `dist/` is derived. Restoration refuses unknown changed bytes. A missing build or runner exits nonzero.
+
 ## Development and scope
 
 `bun run check` runs lint, formatting, strict type checks, unit/integration tests, and portable build. `bun run demo` creates and retains an isolated Git source, installs a selected skill, captures local drift, stages an upstream update, approves/applies it, and proves both edits survived. No live skill library is touched.
 
-Keep domain, content, Git, inventory, state, and deployment boundaries separate. Skillset integration remains deferred. See [AGENTS.md](AGENTS.md), [the implementation acceptance plan](docs/implementation-plan.md), and proposed [Grok setup](docs/grok-bot/setup.md), [environment](docs/grok-bot/environment.md), and [bot profile](docs/grok-bot/bot-profile.md). The Grok references do not establish a working destination adapter. [Architecture and gaps](docs/grok-bot/architecture-and-gaps.md) explains the branch/merge model, lock and catalog differences, and the next isolated integration slice. `bun run demo:restore` checks disposable runner restoration and incomplete-snapshot holds without installing a live hook.
+Keep domain, content, Git, inventory, state, and deployment boundaries separate. Skillset integration remains deferred. See [AGENTS.md](AGENTS.md), [the implementation acceptance plan](docs/implementation-plan.md), and proposed [Grok setup](docs/grok-bot/setup.md), [environment](docs/grok-bot/environment.md), and [bot profile](docs/grok-bot/bot-profile.md). The Grok references do not establish a working destination adapter. [Architecture and gaps](docs/grok-bot/architecture-and-gaps.md) explains the branch/merge model, lock and catalog differences, and the next isolated integration slice. `bun run demo:restore` checks actual archive materialization after simulated directory exclusions and standalone runner restoration, without installing a live hook.
 
 Licensed under the [MIT License](LICENSE).
 

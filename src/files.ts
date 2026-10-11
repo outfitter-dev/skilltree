@@ -51,7 +51,11 @@ export function readJson(path: string): unknown {
   assertNoSymlinks(path);
   return JSON.parse(fs.readFileSync(path, "utf8"));
 }
-export function readTree(root: string, excludeRootGitMetadata = false): Tree {
+export function readTree(
+  root: string,
+  excludeRootGitMetadata = false,
+  hostMetadata: string[] = [],
+): Tree {
   assertNoSymlinks(root);
   if (!fs.statSync(root).isDirectory()) fail("UNSAFE_TREE", "Skill root is not a directory");
   const tree: Tree = Object.create(null);
@@ -60,6 +64,12 @@ export function readTree(root: string, excludeRootGitMetadata = false): Tree {
   function walk(dir: string, prefix: string) {
     for (const name of fs.readdirSync(dir).sort()) {
       if (excludeRootGitMetadata && !prefix && name === ".git") continue;
+      if (!prefix && hostMetadata.includes(name)) {
+        const owned = fs.lstatSync(join(dir, name));
+        if (!owned.isFile() || owned.isSymbolicLink())
+          fail("UNSAFE_TREE", "Host metadata must be regular root files");
+        continue;
+      }
       const path = join(dir, name);
       const rel = prefix ? `${prefix}/${name}` : name;
       if ([".git", "node_modules", "workflow.md", "runs.json"].includes(name))
@@ -110,8 +120,8 @@ export function writeTree(root: string, tree: Tree): void {
     fs.chmodSync(target, file.executable ? 0o755 : 0o644);
   }
 }
-export function liveHash(path: string): string | null {
-  return exists(path) ? treeHash(readTree(path)) : null;
+export function liveHash(path: string, hostMetadata: string[] = []): string | null {
+  return exists(path) ? treeHash(readTree(path, false, hostMetadata)) : null;
 }
 export function putObject(home: string, tree: Tree): string {
   const digest = treeHash(tree);

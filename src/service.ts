@@ -3,14 +3,22 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { fail, slug, relativePath, hash, manifestSchema, type Entry, type Source } from "./model";
+import {
+  fail,
+  slug,
+  relativePath,
+  hash,
+  manifestSchema,
+  SkilltreeError,
+  type Entry,
+  type Source,
+} from "./model";
 import {
   atomicJson,
   assertNoSymlinks,
   exists,
   getObject,
   inside,
-  liveHash,
   putObject,
   readTree,
   treeHash,
@@ -25,9 +33,17 @@ import {
   preflightSource,
   sourcePath,
 } from "./git";
-import { discover, metadata, metadataTree } from "./discovery";
+import { discover, metadataTree } from "./discovery";
 import { load, pending, save, unlock, withLock, type Context } from "./state";
-import { applyEntry, expectedLive, recover, targetPath } from "./deployment";
+import { destinationHash, applyEntry, expectedLive, recover, targetPath } from "./deployment";
+import {
+  materialize,
+  retireSource,
+  archiveRepository,
+  archiveAccepted,
+  restoreMaterializations,
+} from "./archives";
+import { localPath } from "./git";
 import { probeSkills } from "./skills-adapter";
 
 export interface Options {
@@ -46,6 +62,8 @@ export interface Options {
   gardener?: string;
   unlock?: boolean;
   npx?: string;
+  hostMetadata?: boolean;
+  lockBackend?: "mkdir" | "flock";
 }
 function required(value: string | undefined, name: string): string {
   if (!value) fail("USAGE", `Missing --${name}`);
@@ -67,15 +85,15 @@ function publishSource(home: string, item: { source: Source; root: string }): So
   // New generations are never reused or deleted, even after interruption.
   // Only atomic lock publication changes which generation is accepted.
   fs.mkdirSync(join(home, "repos"), { recursive: true });
-  fs.mkdirSync(root);
-  for (const name of fs.readdirSync(item.root))
-    fs.cpSync(join(item.root, name), join(root, name), {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-      dereference: false,
-      verbatimSymlinks: true,
-    });
+  source.archive = archiveRepository(
+    home,
+    item.root,
+    "source",
+    source.id,
+    source.revision,
+    source.repository,
+  );
+  materialize(home, source.archive, "source", source.id, source.revision, source.repository, root);
   preflightSource(root, source.repository, source.revision);
   return source;
 }
@@ -84,10 +102,41 @@ function source(ctx: Context, id: string): Source {
   if (!item) fail("NOT_FOUND", `Unknown source ${id}`);
   return item;
 }
+export function eventsFor(result: unknown): unknown[] {
+  const value = result as {
+    sources?: { id: string; outcome: string; code?: string }[];
+    entries?: Entry[];
+    outcome?: string;
+    id?: string;
+  };
+  const events: unknown[] = [];
+  for (const source of Array.isArray(value.sources) ? value.sources : [])
+    if (source.outcome === "ERROR")
+      events.push({
+        version: 1,
+        type: "source.error",
+        source: source.id,
+        code: source.code,
+        action: "reconcile source and retry",
+      });
+  for (const entry of Array.isArray(value.entries) ? value.entries : [])
+    if (["HELD", "CONFLICT", "DRIFT"].includes(entry.outcome))
+      events.push({
+        version: 1,
+        type: `skill.${entry.outcome.toLowerCase()}`,
+        id: entry.id,
+        source: entry.source,
+        reasons: entry.reasons,
+        candidate: entry.candidate?.hash ?? null,
+        action: "review; approval and apply remain explicit",
+      });
+  return events;
+}
 function report(ctx: Context, command: string, result: unknown): unknown {
   const runId = randomUUID();
-  atomicJson(join(ctx.home, "reports", `${runId}.json`), { runId, command, result });
-  return { runId, result };
+  const events = eventsFor(result);
+  atomicJson(join(ctx.home, "reports", `${runId}.json`), { runId, command, result, events });
+  return { runId, result, events };
 }
 function scratch<T>(work: (root: string) => T): T {
   const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "skilltree-stage-")));
@@ -112,6 +161,8 @@ export function initialize(home: string, options: Options): unknown {
     version: 1,
     destination,
     adapter: "filesystem",
+    hostMetadata: options.hostMetadata ? ["workflow.md", "runs.json"] : [],
+    lockBackend: options.lockBackend ?? (process.platform === "linux" ? "flock" : "mkdir"),
     exclusiveDestination: true,
     gardener: options.gardener ?? "gardener",
     primary: options.primary ?? null,
@@ -135,7 +186,7 @@ function stage(
   scratchRoot: string,
 ): Entry {
   const target = targetPath(ctx, entry.id);
-  if (liveHash(target) !== expectedLive(entry))
+  if (destinationHash(ctx, target) !== expectedLive(entry))
     return {
       ...entry,
       candidate: null,
@@ -218,7 +269,7 @@ export function execute(
       .map((entry) => {
         let actual: string | null;
         try {
-          actual = liveHash(targetPath(ctx, entry.id));
+          actual = destinationHash(ctx, targetPath(ctx, entry.id));
         } catch (error) {
           return {
             ...entry,
@@ -265,6 +316,14 @@ export function execute(
     if (exists(join(ctx.runtime, "lock")))
       issues.push("Runtime lock exists; use recover --unlock only after owner exits");
     if (pending(ctx)) issues.push("Interrupted replacement; run recover");
+    if (
+      fs
+        .readdirSync(ctx.manifest.destination)
+        .some((name) => name.startsWith(".skilltree-transaction-"))
+    )
+      issues.push(
+        "Legacy destination-local transactions remain retained; catalog exposure needs deliberate migration",
+      );
     for (const item of ctx.lock.sources) {
       try {
         sourceRoot(ctx, item);
@@ -284,7 +343,7 @@ export function execute(
           entry.observed,
         ].filter((v): v is string => !!v))
           getObject(ctx.home, digest);
-        if (liveHash(targetPath(ctx, entry.id)) !== expectedLive(entry))
+        if (destinationHash(ctx, targetPath(ctx, entry.id)) !== expectedLive(entry))
           issues.push(`${entry.id}: live drift; capture or reconcile`);
       } catch (error) {
         issues.push(`${entry.id}: ${error instanceof Error ? error.message : "Invalid state"}`);
@@ -319,6 +378,8 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
   const dryRun = options.dryRun ?? false;
   if (pending(ctx) && command !== "recover")
     fail("RECOVERY_REQUIRED", "Run recover before further writes");
+  if (command === "archive") return archiveAccepted(ctx, dryRun);
+  if (command === "restore") return restoreMaterializations(ctx, dryRun);
   if (command === "add") {
     const id = slug.parse(required(options.source, "source"));
     if (ctx.lock.sources.some((s) => s.id === id)) fail("EXISTS", "Source ID already exists");
@@ -348,7 +409,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     const root = sourceRoot(ctx, s);
     const item = discover(root).find((e) => e.path === path);
     if (!item) fail("NOT_FOUND", "Exact skill path not in inventory");
-    if (liveHash(targetPath(ctx, id)) !== null)
+    if (destinationHash(ctx, targetPath(ctx, id)) !== null)
       fail("COLLISION", "Destination already exists and is not owned");
     const tree = readTree(join(root, path));
     const digest = treeHash(tree);
@@ -391,39 +452,100 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
   }
   if (command === "sync")
     return scratch((scratchRoot) => {
-      for (const item of ctx.lock.sources) sourceRoot(ctx, item);
-      const acquired = new Map<string, { source: Source; root: string }>();
+      const results: {
+        id: string;
+        outcome: "STAGED" | "ERROR";
+        code?: string;
+        message?: string;
+      }[] = [];
+      const successful = new Map<string, { source: Source; root: string; entries: Entry[] }>();
       for (const s of ctx.lock.sources) {
-        const home = join(scratchRoot, s.id);
-        fs.mkdirSync(home, { recursive: true });
-        const item = acquire(home, s.id, s.repository, s.ref);
-        acquired.set(s.id, { source: item, root: join(home, "repos", s.id) });
+        try {
+          sourceRoot(ctx, s);
+          const home = join(scratchRoot, s.id);
+          fs.mkdirSync(home, { recursive: true });
+          const item = acquire(home, s.id, s.repository, s.ref);
+          const root = join(home, "repos", s.id);
+          const entries = ctx.lock.entries
+            .filter((e) => e.source === s.id)
+            .map((e) => stage(ctx, e, item, root, true, scratchRoot));
+          sourceRoot(ctx, s);
+          successful.set(s.id, { source: item, root, entries });
+          results.push({ id: s.id, outcome: "STAGED" });
+        } catch (error) {
+          const code = error instanceof SkilltreeError ? error.code : "SOURCE_FAILED";
+          results.push({
+            id: s.id,
+            outcome: "ERROR",
+            code,
+            message: `Source ${s.id} held; accepted state retained`,
+          });
+          // Keep single-source error compatibility, with an explicit source identity.
+          if (ctx.lock.sources.length === 1)
+            fail(
+              code,
+              `Source ${s.id}: ${error instanceof SkilltreeError ? error.message : "acquisition failed; accepted state retained"}`,
+            );
+        }
       }
-      let entries = ctx.lock.entries.map((entry) => {
-        const item = acquired.get(entry.source)!;
-        return stage(ctx, entry, item.source, item.root, true, scratchRoot);
-      });
-      if (!dryRun) {
-        // Recheck accepted checkouts after slow fetch/validation. Never reset user work.
-        for (const item of ctx.lock.sources) sourceRoot(ctx, item);
-        entries = ctx.lock.entries.map((entry) => {
-          const item = acquired.get(entry.source)!;
-          return stage(ctx, entry, item.source, item.root, false, scratchRoot);
-        });
-        const sources = [...acquired.values()].map((item) => {
-          const accepted = ctx.lock.sources.find((source) => source.id === item.source.id)!;
-          // A verified generation at the same revision needs no persistent copy.
-          // Legacy locations migrate once; changed/orphan generations stay retained.
-          return accepted.checkout && accepted.revision === item.source.revision
-            ? accepted
+      const previous = ctx.lock.sources;
+      const sources = previous.map((s) => {
+        const item = successful.get(s.id);
+        if (!item || dryRun) return s;
+        try {
+          sourceRoot(ctx, s);
+          item.entries = ctx.lock.entries
+            .filter((e) => e.source === s.id)
+            .map((e) => stage(ctx, e, item.source, item.root, false, scratchRoot));
+          return s.checkout && s.revision === item.source.revision
+            ? s
             : publishSource(ctx.home, item);
-        });
-        for (const item of ctx.lock.sources) sourceRoot(ctx, item);
-        ctx.lock.entries = entries;
+        } catch (error) {
+          successful.delete(s.id);
+          const result = results.find((r) => r.id === s.id)!;
+          result.outcome = "ERROR";
+          result.code = error instanceof SkilltreeError ? error.code : "SOURCE_FAILED";
+          result.message = `Source ${s.id} held; accepted state retained`;
+          if (previous.length === 1) fail(result.code, result.message);
+          return s;
+        }
+      });
+      if (!dryRun)
+        for (let i = 0; i < previous.length; i++) {
+          const old = previous[i]!;
+          if (!successful.has(old.id)) continue;
+          try {
+            sourceRoot(ctx, old);
+          } catch (error) {
+            successful.delete(old.id);
+            sources[i] = old;
+            const result = results.find((r) => r.id === old.id)!;
+            result.outcome = "ERROR";
+            result.code = error instanceof SkilltreeError ? error.code : "SOURCE_FAILED";
+            result.message = `Source ${old.id} changed before publication; accepted state retained`;
+            if (previous.length === 1) fail(result.code, result.message);
+          }
+        }
+      const entries = ctx.lock.entries.map(
+        (entry) => successful.get(entry.source)?.entries.find((e) => e.id === entry.id) ?? entry,
+      );
+      if (!dryRun && successful.size) {
         ctx.lock.sources = sources;
+        ctx.lock.entries = entries;
         save(ctx);
+        // Accepted snapshots live in archives; only exact generated worktree files
+        // are retired after the single atomic lock publication. Unknown work stays.
+        for (const old of previous)
+          if (sources.find((s) => s.id === old.id)?.checkout !== old.checkout && old.archive)
+            retireSource(ctx.home, old);
       }
-      return { outcome: dryRun ? "DRY_RUN" : "STAGED", entries };
+      const failed = results.some((r) => r.outcome === "ERROR");
+      return {
+        outcome: dryRun ? "DRY_RUN" : failed ? (successful.size ? "PARTIAL" : "ERROR") : "STAGED",
+        sources: results,
+        entries,
+        events: eventsFor({ sources: results, entries }),
+      };
     });
   if (command === "recover") return recover(ctx, dryRun);
   const entry = selection(ctx, args[0] ?? fail("USAGE", `${command} requires a selection ID`));
@@ -440,10 +562,10 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
   if (command === "capture") {
     if (!entry.deployed) fail("UNOWNED", "Only previously deployed skills can be captured");
     const target = targetPath(ctx, entry.id);
-    const meta = metadata(target);
+    const tree = readTree(target, false, ctx.manifest.hostMetadata ?? []);
+    const meta = metadataTree(tree);
     if (meta.name !== entry.name)
       fail("IDENTITY_CHANGED", "Live skill identity changed; reconcile deliberately");
-    const tree = readTree(target);
     const digest = treeHash(tree);
     preflightLocal(ctx.home, entry.id, entry.local);
     if (!dryRun) {
@@ -452,6 +574,18 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
         hash: digest,
         base: entry.deployedBase ?? entry.upstream.hash,
         commit: recordLocal(ctx.home, entry.id, tree, entry.local),
+        ...(entry.local?.checkout ? { checkout: entry.local.checkout } : {}),
+      };
+      entry.local = {
+        ...entry.local,
+        archive: archiveRepository(
+          ctx.home,
+          localPath(ctx.home, entry.id, entry.local),
+          "local",
+          entry.id,
+          entry.local.commit,
+          null,
+        ),
       };
       entry.observed = digest;
       entry.candidate = null;
@@ -467,7 +601,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (!entry.candidate || entry.candidate.hash !== digest)
       fail("STALE_CANDIDATE", "Approval must name the current complete candidate hash");
     getObject(ctx.home, digest);
-    if (liveHash(targetPath(ctx, entry.id)) !== expectedLive(entry))
+    if (destinationHash(ctx, targetPath(ctx, entry.id)) !== expectedLive(entry))
       fail("DRIFT", "Capture or reconcile live drift before approving");
     if (!dryRun) {
       entry.approval = {

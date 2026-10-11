@@ -1,3 +1,4 @@
+import { lockedStdio } from "./lock-descriptor";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -17,7 +18,7 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
   env.GIT_COMMITTER_EMAIL = "skilltree@localhost";
   return env;
 }
-export function gitBytes(cwd: string, args: string[]): Buffer {
+export function gitBytes(cwd: string, args: string[], input?: Buffer): Buffer {
   return execFileSync(
     "git",
     [
@@ -28,12 +29,15 @@ export function gitBytes(cwd: string, args: string[]): Buffer {
       "core.fsmonitor=false",
       "-c",
       "core.autocrlf=false",
+      "-c",
+      "gc.auto=0",
       ...args,
     ],
     {
       cwd,
+      input,
       env: gitEnvironment(),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: input ? ["pipe", "pipe", "pipe", ...lockedStdio().slice(3)] : lockedStdio(),
       timeout: 60_000,
       maxBuffer: 10_000_000,
     },
@@ -124,8 +128,11 @@ export function preflightSource(dir: string, repo: string, revision?: string): v
     );
 }
 
+export function localPath(home: string, id: string, local: Entry["local"]): string {
+  return join(home, "edits", local?.checkout ? `${id}-${local.checkout}` : id);
+}
 export function preflightLocal(home: string, id: string, local: Entry["local"]): Tree | null {
-  const dir = assertNoSymlinks(join(home, "edits", id));
+  const dir = assertNoSymlinks(localPath(home, id, local));
   if (!exists(dir)) {
     if (local) fail("LOCAL_HISTORY_INVALID", "Recorded local history is missing");
     return null;
@@ -183,7 +190,7 @@ export function preflightLocal(home: string, id: string, local: Entry["local"]):
 
 export function recordLocal(home: string, id: string, tree: Tree, local: Entry["local"]): string {
   const previous = preflightLocal(home, id, local);
-  const dir = join(home, "edits", id);
+  const dir = localPath(home, id, local);
   if (!previous) {
     fs.mkdirSync(dir, { recursive: true });
     git(dir, ["init", "-b", "skilltree-local"]);
@@ -250,7 +257,7 @@ export function mergeTrees(
         env: gitEnvironment(),
         maxBuffer: 10_000_000,
         timeout: 10_000,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: lockedStdio(),
       });
       tree[path] = { data: result.toString("base64"), executable: l.executable };
     } catch {

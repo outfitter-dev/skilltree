@@ -16,35 +16,32 @@ A source's `revision` means its latest accepted fetched snapshot. A conflicting 
 
 `sync` stages and reports; it does not perform the proposed combined fetch/reconcile/deploy/notify routine. Only explicit `apply` deploys an exactly approved candidate. Notifications and unattended update policies are not implemented. Draft routine/profile prose describes future integration and must not be treated as a working command contract.
 
-All sources are currently acquired before a collection update is published. One failed fetch aborts the run without changing accepted state, including otherwise healthy sources. This is a conservative collection policy with an availability cost, not per-source failure isolation. A future mode should report each failed source, preserve its previous state, continue independent sources, and commit successful changes atomically without implicitly granting approvals.
+Sources acquire and validate independently. A failed source reports a named error and retains its source and skill records; successful sources stage together in one atomic lock publication. Deployment remains per skill. Single-source failures retain established error codes with source identity. Partial real sync exits nonzero. Structured report events expose source errors and held/conflict/drift selections for a notification consumer; no external messages are sent.
 
-Unchanged syncs reuse the verified active generation. Changed revisions and interrupted generations remain retained; unknown notes are never automatically removed. Scratch clones are still rebuilt each run. Deduplicated Git object storage and owner-approved, ownership-aware retention are future work. Backup and generation retention can consume substantial disk space.
+Unchanged syncs reuse the active generation. Changed revisions publish fresh materializations backed by shared immutable Git objects and content-addressed archive manifests. After publication, exact generated tracked bytes from replaced clean worktrees are retired; unknown files and Git metadata stay retained. Durable history and backups are never garbage-collected. Scratch acquisition remains disposable. Archive/index metadata and deliberately retained unknown work can still grow; an automatic destructive retention policy is absent.
 
 ## Destination and catalog
 
-The filesystem adapter currently stages and retains backups inside hidden transaction folders under the destination. A top-level-only catalog scan sees the active skill; a recursive scan can also see its retained `backup/SKILL.md`. An isolated scanner demonstrates this difference. Whether Grok's catalog recursively scans or ignores such folders is unverified.
+New filesystem transactions stage and retain backups in ownership-marked sibling storage outside the destination tree, with same-device checks and versioned location-bound journals. Recursive fixture scans see only active skills. Version 1 journals still recover from their original destination-local layout. Existing completed legacy backups remain retained and diagnosed; they need deliberate ownership-aware relocation rather than broad deletion.
 
-Do not assume hidden directories are excluded. Before a Grok adapter is accepted, define its catalog boundary and sanctioned write interface. Stage and retain backups outside that boundary on a verified compatible filesystem, validate replacement/recovery behavior, and test catalog results after success, failure and restart. Moving transaction paths also needs backward-compatible recovery of existing journals and an explicit permissions/mount policy. Mock catalog tests cannot prove live host pickup semantics.
+With explicit `init --host-metadata`, root host-owned `workflow.md` and `runs.json` are projected out of skill hashes/capture and preserved through replacement. Upstream-authored reserved names remain invalid. This projection does not establish a sanctioned host API or authorize uncoordinated writes.
+
+The actual catalog boundary, refresh/update interface, filesystem topology and writer coordination remain unverified. Same-filesystem rename and fixture scans cannot prove host pickup semantics.
 
 ## Locks and persistence
 
-The local candidate uses an exclusive directory lock keyed by destination under the OS temporary directory. It serializes cooperating runs sharing that runtime directory. A killed process leaves a lock requiring explicit recovery after proving the PID exited. It is not the proposed Linux `flock -n` lock under an excluded runtime-state directory, and it does not prevent host writes.
+New Linux collections use util-linux flock with a stable destination-keyed inode under canonical `/tmp/skilltree-runtime`, independent of TMPDIR. The parent retains the locked open file description, and Git children inherit it. Process death releases only after all participating descriptors close. macOS/legacy collections keep portable directory locks and explicit stale recovery. Backend transitions hold when the previous locking domain exists; stop older versions before migration. This does not lock host writers or prove that a platform cannot delete runtime directories during active work.
 
-The Linux Grok integration still needs a kernel-held lock backend with a tested subprocess/descriptor lifetime, process-exit release, same-destination contention and runtime-location policy. Merely wrapping a second unrelated lock path would not establish those guarantees.
+Flat content-addressed Git archives preserve committed provenance without excluded worktree directory names. `restore` validates archive/object digests and accepted revisions, materializes new generations offline and atomically publishes derived pointers. Old paths are retained; modified, staged, unknown or concealed work holds. Approvals, local commit identities and library bytes remain unchanged. `archive` migrates intact legacy state; missing archives hold without network acquisition. Shared Git objects avoid complete history copies for each changed revision.
 
-The documented Computer Update directory exclusions can remove tracked `build`, `dist`, `target` or cache paths inside source and local-history working trees. An isolated pruning fixture makes `doctor` report ERROR and sync hold SOURCE_DIRTY; approved immutable content remains available, and the library is not silently changed. Failing closed protects content but is not successful platform recovery.
-
-Avoiding excluded names only at the state root is insufficient. Durable Git/content archives need a layout unaffected by those exclusions, with disposable checkouts materialized outside restored state. A restore path must distinguish missing generated material from real edits, retain unknown work, verify exact commit/content provenance and never rewrite approvals implicitly.
-
-`demo:restore` demonstrates loss of a disposable runner, restoration from a digest-verified local artifact, and check-only doctor/verify against unchanged durable state. It also demonstrates the incomplete-snapshot hold. It is an isolated harness, not a public `restore` command, installed hook, network installer or live Computer Update test.
+`demo:restore` actually prunes tracked build content in source and local histories, restores both from archives, and checks standalone digest-verified runner install/restoration after disposable dist loss. It is an isolated harness, not an installed hook or a real Computer Update. Snapshot consistency, inclusion of archives and unsnapshotted work loss still need host evidence.
 
 ## Next integration slice
 
-1. Specify a destination adapter contract around the sanctioned host interface and catalog boundary; test it with an isolated host/catalog fixture before any live acceptance.
-2. Introduce durable archive/materialization and explicit restore contracts; cover excluded paths, rollback snapshots, unknown local work and runner reinstall.
-3. Implement and test the Linux kernel lock backend and runtime location. Keep host-writer coordination explicit.
-4. Add source-isolated acquisition/reporting and bounded retention only with documented ownership and approval semantics.
-5. Run Linux x64 Node 20/native/package checks and verify actual host behavior separately. Read-only CI and container results cannot establish live integration.
-6. Configure routines, notifications, keeper hooks or live installation only through separately authorized host integration work.
+1. Independently review the isolated preservation implementations, including crash/unknown-work behavior and backward compatibility.
+2. Establish the real catalog/update contract and filesystem/runtime lifetime through read-only host evidence before selecting a live adapter.
+3. Verify real snapshot inclusion/consistency and approved hook order; simulated restoration cannot prove platform behavior.
+4. Decide destructive retention and unattended update/notification policy separately. No history/backups are automatically deleted.
+5. Configure live routines/hooks only in separately authorized integration work; keep primary-agent integration optional.
 
 The Git-backed fixture suite has a bounded thirty-second per-test deadline to accommodate cold filesystems and emulated Linux verification. This changes test infrastructure only; Git operation limits, application locking and assertions are unchanged.

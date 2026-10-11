@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { setLockDescriptor, lockDescriptor } from "./lock-descriptor";
 import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,7 +23,7 @@ export interface Context {
 }
 export function runtimePath(home: string): string {
   return join(
-    fs.realpathSync(tmpdir()),
+    fs.realpathSync(process.platform === "linux" ? "/tmp" : tmpdir()),
     "skilltree-runtime",
     createHash("sha256").update(resolve(home)).digest("hex"),
   );
@@ -53,6 +55,38 @@ export function pending(ctx: Context): Journal | null {
 export function withLock<T>(ctx: Context, work: () => T, allowRecovery = false): T {
   assertNoSymlinks(ctx.runtime);
   fs.mkdirSync(ctx.runtime, { recursive: true });
+  if (ctx.manifest.lockBackend === "flock") {
+    if (process.platform !== "linux")
+      fail("LOCK_UNAVAILABLE", "Configured flock backend requires Linux");
+    if (exists(join(ctx.runtime, "lock")))
+      fail("LOCKED", "Legacy directory lock must be explicitly recovered before kernel locking");
+    if (lockDescriptor() !== null) fail("LOCKED", "Nested kernel lock is unsupported");
+    const path = assertNoSymlinks(join(ctx.runtime, "kernel.lock"));
+    const fd = fs.openSync(path, "a+", 0o600);
+    try {
+      if (!fs.fstatSync(fd).isFile()) fail("UNSAFE_PATH", "Kernel lock must be a regular file");
+      try {
+        execFileSync("flock", ["-n", "-E", "73", "3"], { stdio: ["ignore", "pipe", "pipe", fd] });
+      } catch (error) {
+        if ((error as { status?: number }).status === 73)
+          fail("LOCKED", "Another run holds the kernel lock");
+        fail("LOCK_UNAVAILABLE", "Cannot acquire configured util-linux flock; no fallback");
+      }
+      setLockDescriptor(fd);
+      if (!allowRecovery && pending(ctx))
+        fail(
+          "RECOVERY_REQUIRED",
+          "Interrupted replacement exists; run recover before other writes",
+        );
+      return work();
+    } finally {
+      setLockDescriptor(null);
+      fs.closeSync(fd);
+    }
+  }
+  const kernel = join(ctx.runtime, "kernel.lock");
+  if (exists(kernel))
+    fail("LOCKED", "Kernel lock domain exists; retain configured backend or migrate explicitly");
   const lockDir = join(ctx.runtime, "lock");
   try {
     fs.mkdirSync(lockDir);

@@ -44,7 +44,7 @@ test("unsupported upstream validation leaves accepted sources intact and correct
   }
 });
 
-test("later acquisition failure leaves all accepted source revisions unchanged", () => {
+test("later acquisition failure holds that source while healthy sources stage atomically", () => {
   const f = fixture();
   try {
     const other = join(f.root, "other-upstream");
@@ -55,13 +55,22 @@ test("later acquisition failure leaves all accepted source revisions unchanged",
     editBody(f.skill, "Last line", "New upstream");
     commit(f.repo, "new upstream");
     fs.renameSync(other, other + "-retained");
-    const before = authoritative(f.home);
-    for (const dryRun of [true, false]) {
-      expect(() => execute(f.home, "sync", [], { dryRun })).toThrow();
-      expect(authoritative(f.home)).toBe(before);
-      for (const source of accepted)
-        expect(git(sourcePath(f.home, source), ["rev-parse", "HEAD"])).toBe(source.revision);
-    }
+    const originalEntries = load(f.home).lock.entries;
+    const dry = execute(f.home, "sync", [], { dryRun: true }) as {
+      sources: { id: string; outcome: string }[];
+    };
+    expect(dry.sources).toContainEqual(expect.objectContaining({ id: "second", outcome: "ERROR" }));
+    expect(load(f.home).lock.sources).toEqual(accepted);
+    const real = execute(f.home, "sync", []) as {
+      result: { outcome: string; sources: { id: string; outcome: string }[] };
+    };
+    expect(real.result.outcome).toBe("PARTIAL");
+    expect(real.result.sources).toContainEqual(
+      expect.objectContaining({ id: "second", outcome: "ERROR" }),
+    );
+    expect(load(f.home).lock.sources[1]).toEqual(accepted[1]);
+    expect(load(f.home).lock.sources[0]!.revision).toBe(git(f.repo, ["rev-parse", "HEAD"]));
+    expect(load(f.home).lock.entries[0]!.approval).toEqual(originalEntries[0]!.approval);
     fs.renameSync(other + "-retained", other);
     execute(f.home, "sync", []);
     expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });

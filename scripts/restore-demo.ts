@@ -112,5 +112,39 @@ if (cli(["sync", "--dry-run"], 1).outcome !== "SOURCE_DIRTY")
   throw new Error("Incomplete restore was not held");
 if (fingerprint(home) !== pruned || fingerprint(dest) !== library)
   throw new Error("Incomplete restore checks changed retained content");
-console.log("incomplete snapshot: held; working checkout restore remains a Grok compatibility gap");
+cli(["restore", "--dry-run"]);
+cli(["restore"]);
+if (cli(["doctor"]).outcome !== "OK") throw new Error("Materialization restore failed doctor");
+if (fingerprint(dest) !== library) throw new Error("Materialization restore changed library");
+const restored = load(home);
+if (
+  JSON.stringify(restored.lock.entries[0]?.approval) !==
+  JSON.stringify(ctx.lock.entries[0]?.approval)
+)
+  throw new Error("Restore changed approval");
+console.log(
+  "incomplete snapshot: verified archives restored fresh materializations; old paths retained",
+);
+const standalone = join(root, "standalone-installation");
+const installer = resolve("bin/install.mjs");
+const nodePath = fs.realpathSync(
+  process.env.SKILLTREE_DEMO_NODE ?? execFileSync("which", ["node"], { encoding: "utf8" }).trim(),
+);
+execFileSync(nodePath, [
+  installer,
+  "--prefix",
+  standalone,
+  "--artifact",
+  artifact,
+  "--sha256",
+  approvedDigest,
+  "--node",
+  nodePath,
+]);
+const standaloneLauncher = join(standalone, "bin/skilltree");
+execFileSync(standaloneLauncher, ["doctor", "--home", home]);
+fs.rmSync(join(standalone, "dist"), { recursive: true });
+execFileSync(nodePath, [installer, "--prefix", standalone, "--restore"]);
+execFileSync(standaloneLauncher, ["doctor", "--home", home]);
+console.log("standalone: digest-verified local install and excluded-runner restore passed");
 console.log(`Retained isolated restore: ${root}`);

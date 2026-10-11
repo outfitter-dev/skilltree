@@ -21,7 +21,12 @@ export function fixture() {
   commit(repo, "initial");
   const home = join(root, "state");
   const dest = join(root, "library");
-  execute(home, "init", [], { destination: dest, exclusive: true, primary: "coordinator" });
+  execute(home, "init", [], {
+    destination: dest,
+    exclusive: true,
+    primary: "coordinator",
+    lockBackend: "mkdir",
+  });
   execute(home, "add", [repo], { source: "upstream", ref: "main" });
   return { root, repo, skill, home, dest, cleanup: () => fs.rmSync(root, { recursive: true }) };
 }

@@ -17,7 +17,7 @@ Scope: one usable local/shared-filesystem workflow, not a live destination integ
 - Native adapters: conventional `.agents/skills`, `.claude/skills`, `skills`, and local Claude plugin declarations. Cursor/ChatGPT manifest semantics are deferred and fail explicitly.
 - Optional replaceable `skills@1.7.2` CLI probe uses listing only in an isolated scratch directory. No SDK assumption; no upstream installer touches the live library.
 - Durable immutable manifest plus versioned lock, immutable content objects, acquired repos, local edit Git histories, and reports. Keep this state outside the disposable package runner.
-- Portable exclusive directory lock outside durable state, with explicit stale-lock recovery. No automatic lock stealing; Linux `flock` integration remains future work.
+- Stable destination-keyed Linux kernel locking with subprocess descriptor lifetime; portable directory locking for macOS/legacy state and explicit stale recovery. No automatic lock stealing.
 - Filesystem deployment requires explicit acknowledgement of coordinated exclusive destination access. It detects observed concurrent writes but cannot lock out another host writer. Grok's sanctioned write/catalog behavior remains unverified.
 - Deleting a whole selected skill is held. Three-way file deletion/rename is represented as delete/add and must reconcile without losing local content.
 - Reject symlinks, special files, nested repositories, reserved legacy/log files, and unsafe paths. Preserve file bytes and executable bits; do not copy ownership, ACLs, or directory modes. Empty directories are not content.
@@ -32,4 +32,4 @@ Scope: one usable local/shared-filesystem workflow, not a live destination integ
 
 ## Architecture alignment
 
-Read [the Grok architecture comparison](grok-bot/architecture-and-gaps.md) before treating this slice as the full proposed product. Detached source generations plus per-skill local histories and file merges intentionally differ from a per-source working branch/rebase. Staging-only sync, portable directory locks, collection-wide fetch failure and filesystem transactions inside the library remain explicit boundaries; live adapter, routine, Linux lock and durable restore work is not complete.
+Read [the Grok architecture comparison](grok-bot/architecture-and-gaps.md) before treating this slice as the full proposed product. Detached source generations plus per-skill local histories and file merges intentionally differ from a per-source working branch/rebase. Staging-only sync remains explicit. Preservation implementations now include source-isolated atomic state publication, catalog-external transactions, deduplicated archives/materialization and Linux kernel locks. Host catalog/update API, runtime lifecycle, real snapshot inclusion and unattended routines still need separate integration evidence.
