@@ -85,6 +85,7 @@ export const sourceSchema = z
     repository: z.string().min(1),
     ref: z.string().min(1),
     revision: z.string().regex(/^[a-f0-9]{40,64}$/),
+    checkout: z.string().uuid().optional(),
   })
   .strict();
 export type Source = z.infer<typeof sourceSchema>;

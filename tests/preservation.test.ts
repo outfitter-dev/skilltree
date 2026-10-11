@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { git } from "../src/git";
+import { git, sourcePath } from "../src/git";
 import { execute } from "../src/service";
 import { load } from "../src/state";
 import { applyEntry, recover } from "../src/deployment";
@@ -78,7 +78,7 @@ for (const kind of ["tracked", "ignored", "assume-unchanged", "remote"]) {
   test(`sync dry run checks the durable source for ${kind} changes`, () => {
     const f = prepared();
     try {
-      const source = join(f.home, "repos/upstream");
+      const source = sourcePath(f.home, load(f.home).lock.sources[0]!);
       if (kind === "remote") git(source, ["remote", "set-url", "origin", f.root]);
       else if (kind === "ignored") {
         fs.appendFileSync(join(source, ".git/info/exclude"), "\nnote.txt\n");

@@ -17,10 +17,11 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
   env.GIT_COMMITTER_EMAIL = "skilltree@localhost";
   return env;
 }
-export function git(cwd: string, args: string[]): string {
+export function gitBytes(cwd: string, args: string[]): Buffer {
   return execFileSync(
     "git",
     [
+      "--literal-pathspecs",
       "-c",
       "core.hooksPath=/dev/null",
       "-c",
@@ -32,13 +33,38 @@ export function git(cwd: string, args: string[]): string {
     {
       cwd,
       env: gitEnvironment(),
-      encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 60_000,
       maxBuffer: 10_000_000,
     },
-  ).trim();
+  );
 }
+export function git(cwd: string, args: string[]): string {
+  return gitBytes(cwd, args).toString("utf8").trim();
+}
+
+export function sourcePath(home: string, source: Source): string {
+  return join(home, "repos", source.checkout ? `${source.id}-${source.checkout}` : source.id);
+}
+
+export function committedTree(dir: string, revision: string): Tree {
+  const tree: Tree = Object.create(null);
+  for (const item of gitBytes(dir, ["ls-tree", "-r", "-z", "--full-tree", revision])
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean)) {
+    const split = item.indexOf("\t");
+    const [mode, type, oid] = item.slice(0, split).split(" ");
+    if (split < 0 || type !== "blob" || !["100644", "100755"].includes(mode!))
+      fail("LOCAL_HISTORY_INVALID", "Local commit contains an unsupported file type");
+    tree[item.slice(split + 1)] = {
+      data: gitBytes(dir, ["cat-file", "blob", oid!]).toString("base64"),
+      executable: mode === "100755",
+    };
+  }
+  return tree;
+}
+
 export function repository(value: string): string {
   if (value.startsWith("-") || ["\0", "\n", "\r"].some((part) => value.includes(part)))
     fail("INVALID_SOURCE", "Invalid Git repository");
@@ -121,6 +147,8 @@ export function preflightLocal(home: string, id: string, local: Entry["local"]):
     const match = /^Capture content ([a-f0-9]{64})$/.exec(git(dir, ["log", "-1", "--format=%s"]));
     if (!match) fail("LOCAL_HISTORY_INVALID", "Local history has an unrecognized commit");
     previous = getObject(home, match[1]!);
+    if (treeHash(committedTree(dir, "HEAD")) !== treeHash(previous))
+      fail("LOCAL_HISTORY_INVALID", "Recorded commit differs from its complete content snapshot");
   } catch {
     return fail("LOCAL_HISTORY_INVALID", "Local Git provenance is missing or unrecognized");
   }
@@ -134,7 +162,11 @@ export function preflightLocal(home: string, id: string, local: Entry["local"]):
     );
   // Compare bytes and modes directly: assume-unchanged/skip-worktree can hide edits.
   try {
-    const tracked = git(dir, ["ls-files", "-z"]).split("\0").filter(Boolean).sort();
+    const tracked = gitBytes(dir, ["ls-files", "-z"])
+      .toString("utf8")
+      .split("\0")
+      .filter(Boolean)
+      .sort();
     if (
       JSON.stringify(tracked) !== JSON.stringify(Object.keys(previous).sort()) ||
       treeHash(readTree(dir, true)) !== treeHash(previous)
@@ -176,7 +208,10 @@ export function recordLocal(home: string, id: string, tree: Tree, local: Entry["
   const owned = [...new Set([...Object.keys(previous ?? {}), ...Object.keys(tree)])];
   git(dir, ["add", "--all", "--force", "--", ...owned]);
   git(dir, ["commit", "--allow-empty", "-m", `Capture content ${treeHash(tree)}`]);
-  return git(dir, ["rev-parse", "HEAD"]);
+  const revision = git(dir, ["rev-parse", "HEAD"]);
+  if (treeHash(committedTree(dir, revision)) !== treeHash(tree))
+    fail("LOCAL_HISTORY_INVALID", "Committed files differ from the intended complete snapshot");
+  return revision;
 }
 export function mergeTrees(
   base: Tree,

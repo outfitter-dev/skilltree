@@ -60,7 +60,7 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 - `skilltree.json`: immutable destination, adapter, gardener/primary metadata, manual policy.
 - `skilltree.lock`: selections and profiles; distinct upstream, local base/hash/Git commit, candidate, approval, observed local baseline, and last deployment records.
 - `objects/`: immutable complete file snapshots, checked against their SHA-256 on use.
-- `repos/`: acquired Git sources; do not treat them as local edit workspaces.
+- `repos/`: acquired Git sources; do not treat them as local edit workspaces. Sync fetches and validates in scratch, copies new checkout generations, then atomically publishes their references in the lock. Accepted checkouts are never advanced in place. Prior or interrupted generations are retained; there is no automatic cleanup.
 - `edits/`: local Git histories. `capture` records local library edits here; ignored and untracked files, hidden index flags, and changed bytes or modes are preserved and block capture/apply. History updates replace only files owned by a verified recorded snapshot.
 - `reports/`: per-write JSON receipts with run IDs.
 - `transaction.json`: interrupted per-skill replacement journal, when present.

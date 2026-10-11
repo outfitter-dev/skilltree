@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { sourcePath } from "../src/git";
 import { execute } from "../src/service";
 import { load, withLock, runtimePath } from "../src/state";
 import { applyEntry, recover } from "../src/deployment";
@@ -399,7 +400,10 @@ test("clean supporting-file renames and deletions require new approval", () => {
 test("modified acquired sources are preserved and cannot be mislabeled upstream", () => {
   const f = fixture();
   try {
-    const changed = join(f.home, "repos/upstream/.agents/skills/helper/SKILL.md");
+    const changed = join(
+      sourcePath(f.home, load(f.home).lock.sources[0]!),
+      ".agents/skills/helper/SKILL.md",
+    );
     fs.appendFileSync(changed, "Uncommitted source work\n");
     expect(() => install(f.home)).toThrow(expect.objectContaining({ code: "SOURCE_DIRTY" }));
     expect(() => execute(f.home, "sync", [])).toThrow(

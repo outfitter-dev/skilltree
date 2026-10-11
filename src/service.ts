@@ -23,6 +23,7 @@ import {
   repository,
   preflightLocal,
   preflightSource,
+  sourcePath,
 } from "./git";
 import { discover, metadata, metadataTree } from "./discovery";
 import { load, pending, save, unlock, withLock, type Context } from "./state";
@@ -56,9 +57,25 @@ function selection(ctx: Context, id: string): Entry {
   return entry;
 }
 function sourceRoot(ctx: Context, item: Source): string {
-  const root = join(ctx.home, "repos", item.id);
+  const root = sourcePath(ctx.home, item);
   preflightSource(root, item.repository, item.revision);
   return root;
+}
+function publishSource(home: string, item: { source: Source; root: string }): Source {
+  const source: Source = { ...item.source, checkout: randomUUID() };
+  const root = assertNoSymlinks(sourcePath(home, source));
+  // New generations are never reused or deleted, even after interruption.
+  // Only atomic lock publication changes which generation is accepted.
+  fs.mkdirSync(join(home, "repos"), { recursive: true });
+  fs.mkdirSync(root);
+  for (const name of fs.readdirSync(item.root))
+    fs.cpSync(join(item.root, name), join(root, name), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
+  preflightSource(root, source.repository, source.revision);
+  return source;
 }
 function source(ctx: Context, id: string): Source {
   const item = ctx.lock.sources.find((s) => s.id === id);
@@ -305,14 +322,20 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (ctx.lock.sources.some((s) => s.id === id)) fail("EXISTS", "Source ID already exists");
     const repo = repository(args[0] ?? fail("USAGE", "add requires a Git source"));
     const ref = options.ref ?? "HEAD";
-    const acquired = dryRun
-      ? scratch((root) => acquire(root, id, repo, ref))
-      : acquire(ctx.home, id, repo, ref);
-    if (!dryRun) {
-      ctx.lock.sources.push(acquired);
-      save(ctx);
-    }
-    return { outcome: dryRun ? "WOULD_ADD" : "ADDED", source: acquired };
+    return scratch((root) => {
+      const acquired = acquire(root, id, repo, ref);
+      const accepted = dryRun
+        ? acquired
+        : publishSource(ctx.home, {
+            source: acquired,
+            root: join(root, "repos", id),
+          });
+      if (!dryRun) {
+        ctx.lock.sources.push(accepted);
+        save(ctx);
+      }
+      return { outcome: dryRun ? "WOULD_ADD" : "ADDED", source: accepted };
+    });
   }
   if (command === "select") {
     const s = source(ctx, args[0] ?? "");
@@ -369,18 +392,26 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
       for (const item of ctx.lock.sources) sourceRoot(ctx, item);
       const acquired = new Map<string, { source: Source; root: string }>();
       for (const s of ctx.lock.sources) {
-        const home = dryRun ? join(scratchRoot, s.id) : ctx.home;
-        if (dryRun) fs.mkdirSync(home, { recursive: true });
+        const home = join(scratchRoot, s.id);
+        fs.mkdirSync(home, { recursive: true });
         const item = acquire(home, s.id, s.repository, s.ref);
         acquired.set(s.id, { source: item, root: join(home, "repos", s.id) });
       }
-      const entries = ctx.lock.entries.map((entry) => {
+      let entries = ctx.lock.entries.map((entry) => {
         const item = acquired.get(entry.source)!;
-        return stage(ctx, entry, item.source, item.root, dryRun, scratchRoot);
+        return stage(ctx, entry, item.source, item.root, true, scratchRoot);
       });
       if (!dryRun) {
+        // Recheck accepted checkouts after slow fetch/validation. Never reset user work.
+        for (const item of ctx.lock.sources) sourceRoot(ctx, item);
+        entries = ctx.lock.entries.map((entry) => {
+          const item = acquired.get(entry.source)!;
+          return stage(ctx, entry, item.source, item.root, false, scratchRoot);
+        });
+        const sources = [...acquired.values()].map((item) => publishSource(ctx.home, item));
+        for (const item of ctx.lock.sources) sourceRoot(ctx, item);
         ctx.lock.entries = entries;
-        ctx.lock.sources = [...acquired.values()].map((item) => item.source);
+        ctx.lock.sources = sources;
         save(ctx);
       }
       return { outcome: dryRun ? "DRY_RUN" : "STAGED", entries };
