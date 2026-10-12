@@ -165,6 +165,7 @@ test("every consumed changeset needs an associated merged boundary PR", () => {
     labels: [{ name: "stack:boundary" }],
   };
   expect(allChangesetsAtBoundary([[pr], [pr]])).toBe(true);
+  expect(allChangesetsAtBoundary([[pr, { ...pr, merged_at: null }], [pr]])).toBe(true);
   for (const groups of [
     [],
     [[]],

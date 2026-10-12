@@ -122,19 +122,17 @@ export interface BoundaryPull {
 export function allChangesetsAtBoundary(groups: BoundaryPull[][]): boolean {
   return (
     groups.length > 0 &&
-    groups.every(
-      (pulls) =>
-        pulls.length > 0 &&
-        pulls.every(
-          (p) =>
-            !!p.merged_at &&
-            p.base.ref === "main" &&
-            p.base.repo.full_name === releaseRepository &&
-            p.labels.some((l) => l.name === "stack:boundary") &&
-            p.labels
-              .filter((l) => l.name.startsWith("stack:"))
-              .every((l) => l.name === "stack:boundary"),
-        ),
+    groups.every((pulls) =>
+      pulls.some(
+        (p) =>
+          !!p.merged_at &&
+          p.base.ref === "main" &&
+          p.base.repo.full_name === releaseRepository &&
+          p.labels.some((l) => l.name === "stack:boundary") &&
+          p.labels
+            .filter((l) => l.name.startsWith("stack:"))
+            .every((l) => l.name === "stack:boundary"),
+      ),
     )
   );
 }
