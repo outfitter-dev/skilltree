@@ -181,7 +181,15 @@ test("every consumed changeset needs an associated merged boundary PR", () => {
 test("all npm install lifecycle hooks are rejected", () => {
   expect(hasInstallHook(undefined)).toBe(false);
   expect(hasInstallHook({ prepublishOnly: "node scripts/publish-guard.mjs" })).toBe(false);
-  for (const name of ["preinstall", "install", "postinstall"])
+  for (const name of [
+    "preinstall",
+    "install",
+    "postinstall",
+    "prepublish",
+    "preprepare",
+    "prepare",
+    "postprepare",
+  ])
     expect(hasInstallHook({ [name]: "echo example" })).toBe(true);
 });
 test("all public payload paths require release intent", () => {

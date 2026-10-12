@@ -137,9 +137,15 @@ export function allChangesetsAtBoundary(groups: BoundaryPull[][]): boolean {
   );
 }
 export function hasInstallHook(scripts: Record<string, unknown> | undefined): boolean {
-  return ["preinstall", "install", "postinstall"].some(
-    (name) => scripts && Object.hasOwn(scripts, name),
-  );
+  return [
+    "preinstall",
+    "install",
+    "postinstall",
+    "prepublish",
+    "preprepare",
+    "prepare",
+    "postprepare",
+  ].some((name) => scripts && Object.hasOwn(scripts, name));
 }
 export function packageFacing(paths: string[]): boolean {
   return paths.some(
