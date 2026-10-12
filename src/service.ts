@@ -504,8 +504,28 @@ export function execute(
       };
   }
   if (dryRun) return mutate(ctx, command, args, options);
+  // Restore collections left on mkdir by an older unsupported downgrade through
+  // their existing kernel domain, retaining directory/legacy writer checks.
+  const locking =
+    command === "configure" &&
+    options.lockBackend === "flock" &&
+    ctx.manifest.runtimeVersion === 2 &&
+    ctx.manifest.lockBackend !== "flock" &&
+    (exists(
+      join(
+        ctx.runtime,
+        ctx.manifest.runtimeVersion === 2
+          ? "sync.lock"
+          : (ctx.manifest.legacyLockName ?? "kernel.lock"),
+      ),
+    ) ||
+      (ctx.manifest.legacyRuntime &&
+        ctx.manifest.legacyRuntime !== ctx.runtime &&
+        exists(join(ctx.manifest.legacyRuntime, ctx.manifest.legacyLockName ?? "kernel.lock"))))
+      ? { ...ctx, manifest: { ...ctx.manifest, lockBackend: "flock" as const } }
+      : ctx;
   return withLock(
-    ctx,
+    locking,
     () => {
       const current = load(home);
       return report(current, command, mutate(current, command, args, options));

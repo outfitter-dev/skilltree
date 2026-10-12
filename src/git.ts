@@ -1,5 +1,6 @@
 import { lockedStdio } from "./lock-descriptor";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fail, type Entry, type Source, type Tree } from "./model";
@@ -18,7 +19,12 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
   env.GIT_COMMITTER_EMAIL = "skilltree@localhost";
   return env;
 }
-export function gitBytes(cwd: string, args: string[], input?: Buffer): Buffer {
+export function gitBytes(
+  cwd: string,
+  args: string[],
+  input?: Buffer,
+  maxBuffer = 10_000_000,
+): Buffer {
   return execFileSync(
     "git",
     [
@@ -39,9 +45,63 @@ export function gitBytes(cwd: string, args: string[], input?: Buffer): Buffer {
       env: gitEnvironment(),
       stdio: input ? ["pipe", "pipe", "pipe", ...lockedStdio().slice(3)] : lockedStdio(),
       timeout: 60_000,
-      maxBuffer: 10_000_000,
+      maxBuffer,
     },
   );
+}
+export const MAX_GIT_OBJECT_BYTES = 50_000_000;
+interface GitObjectInfo {
+  oid: string;
+  type: "commit" | "tree" | "blob" | "tag";
+  size: number;
+}
+function objectInfo(line: string): GitObjectInfo {
+  const match = /^([a-f0-9]{40}|[a-f0-9]{64}) (commit|tree|blob|tag) (0|[1-9][0-9]*)$/.exec(line);
+  if (!match) fail("ARCHIVE_CORRUPT", "Invalid Git object metadata");
+  const size = Number(match[3]);
+  if (!Number.isSafeInteger(size) || size > MAX_GIT_OBJECT_BYTES)
+    fail(
+      "ARCHIVE_LIMIT",
+      `Git object exceeds the ${MAX_GIT_OBJECT_BYTES}-byte archive limit: ${match[1]}`,
+    );
+  return { oid: match[1]!, type: match[2] as GitObjectInfo["type"], size };
+}
+function readGitObject(cwd: string, info: GitObjectInfo) {
+  const data = gitBytes(
+    cwd,
+    ["cat-file", info.type, info.oid],
+    undefined,
+    Math.max(16384, info.size + 1),
+  );
+  const actual = createHash(info.oid.length === 64 ? "sha256" : "sha1")
+    .update(`${info.type} ${data.length}\0`)
+    .update(data)
+    .digest("hex");
+  if (data.length !== info.size || actual !== info.oid)
+    fail("ARCHIVE_CORRUPT", "Git object bytes differ from their declared identity");
+  return { ...info, data };
+}
+export function gitObject(cwd: string, oid: string) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid))
+    fail("ARCHIVE_CORRUPT", "Invalid Git object identity");
+  const info = objectInfo(
+    gitBytes(cwd, ["cat-file", "--batch-check"], Buffer.from(oid + "\n"))
+      .toString()
+      .trim(),
+  );
+  if (info.oid !== oid) fail("ARCHIVE_CORRUPT", "Git object metadata identity differs");
+  return readGitObject(cwd, info);
+}
+export function* gitObjects(cwd: string) {
+  let index: string;
+  try {
+    index = gitBytes(cwd, ["cat-file", "--batch-all-objects", "--batch-check"]).toString().trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOBUFS")
+      fail("ARCHIVE_LIMIT", "Git object metadata index exceeds 10,000,000 bytes");
+    throw error;
+  }
+  for (const line of index.split("\n").filter(Boolean)) yield readGitObject(cwd, objectInfo(line));
 }
 export function git(cwd: string, args: string[]): string {
   return gitBytes(cwd, args).toString("utf8").trim();

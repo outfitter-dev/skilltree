@@ -11,6 +11,8 @@ import { atomicJson, readJson, assertNoSymlinks, exists, treeHash, getObject } f
 import {
   git,
   gitBytes,
+  gitObjects,
+  gitObject,
   sourcePath,
   localPath,
   preflightSource,
@@ -66,23 +68,9 @@ export function archiveRepository(
 ): string {
   // Store each Git object once. Archive manifests retain revisions/history without
   // writing another full bundle or checkout for every changed revision.
-  const bytes = gitBytes(root, ["cat-file", "--batch-all-objects", "--batch"]);
   const objects: Record<string, string> = {};
-  let offset = 0;
-  while (offset < bytes.length) {
-    const end = bytes.indexOf(10, offset);
-    if (end < 0) fail("ARCHIVE_CORRUPT", "Invalid Git object stream");
-    const [oid, type, sizeText] = bytes.subarray(offset, end).toString().split(" ");
-    const size = Number(sizeText);
-    offset = end + 1;
-    if (!oid || !Number.isSafeInteger(size) || size < 0 || offset + size >= bytes.length)
-      fail("ARCHIVE_CORRUPT", "Invalid Git object length");
-    const value = objectSchema.parse({
-      type,
-      data: bytes.subarray(offset, offset + size).toString("base64"),
-    });
-    if (objectId(rawObject(value), oid) !== oid)
-      fail("ARCHIVE_CORRUPT", "Git object identity mismatch");
+  for (const { oid, type, data } of gitObjects(root)) {
+    const value = objectSchema.parse({ type, data: data.toString("base64") });
     const key = digest(value);
     const path = join(home, "archive-objects", `${key}.json`);
     if (exists(path)) {
@@ -90,8 +78,8 @@ export function archiveRepository(
         fail("ARCHIVE_CORRUPT", "Existing archive object corrupt");
     } else atomicJson(path, value);
     objects[oid] = key;
-    offset += size + 1;
   }
+  if (!objects[revision]) fail("ARCHIVE_CORRUPT", "Accepted revision is missing from the archive");
   const value = archiveSchema.parse({ version: 2, kind, id, revision, repository, objects });
   const key = digest(value);
   const path = join(home, "archives", `${key}.json`);
@@ -204,7 +192,7 @@ export function retireSource(home: string, source: Source): void {
     if (!exists(target)) continue;
     const stat = fs.lstatSync(target);
     if ((mode === "120000") !== stat.isSymbolicLink()) continue;
-    const expected = gitBytes(root, ["cat-file", "blob", oid!]);
+    const expected = gitObject(root, oid!).data;
     const actual = stat.isSymbolicLink()
       ? Buffer.from(fs.readlinkSync(target))
       : stat.isFile()

@@ -15,7 +15,7 @@ import {
 } from "./files";
 import { runtimePath, type Context } from "./state";
 import { expectedLive, storage, storageRoot, targetPath } from "./deployment";
-import { sourcePath, localPath, git, gitBytes, preflightSource } from "./git";
+import { sourcePath, localPath, git, gitBytes, gitObjects, preflightSource } from "./git";
 import { readArchive } from "./archives";
 import {
   ownershipSchema,
@@ -32,7 +32,7 @@ import type { Options } from "./service";
 export function sourceFailure(error: unknown): string {
   const e = error as { code?: unknown; name?: unknown; stderr?: unknown; message?: unknown };
   if (e.code === "ETIMEDOUT") return "SOURCE_TIMEOUT";
-  if (e.code === "ENOBUFS") return "SOURCE_LIMIT";
+  if (["ENOBUFS", "ARCHIVE_LIMIT"].includes(String(e.code))) return "SOURCE_LIMIT";
   if (e.code === "ENOENT") return "SOURCE_TOOL_OR_PATH_MISSING";
   if (["EACCES", "EPERM", "ENOSPC", "EROFS"].includes(String(e.code))) return "SOURCE_IO";
   const diagnostic = String(e.stderr ?? "");
@@ -54,6 +54,11 @@ export function sourceFailure(error: unknown): string {
   return "SOURCE_GIT_OR_VALIDATION";
 }
 export function configure(ctx: Context, options: Options): unknown {
+  if (ctx.manifest.lockBackend === "flock" && options.lockBackend === "mkdir")
+    fail(
+      "LOCK_BACKEND_UNSUPPORTED",
+      "A flock domain cannot downgrade to mkdir; retain its stable kernel lock inode",
+    );
   const next = manifestSchema.parse({
     ...ctx.manifest,
     adapter: options.adapter ?? ctx.manifest.adapter,
@@ -277,30 +282,12 @@ function legacyObjectCache(
       fail("OWNERSHIP_HELD", "Changed or unknown legacy cache work retained");
     // Object bytes are verified against the archive; refs/config/logs/index are
     // deliberately retained because legacy ownership of their bytes is unknown.
-    const stream = gitBytes(root, ["cat-file", "--batch-all-objects", "--batch"]);
-    let offset = 0;
-    while (offset < stream.length) {
-      const end = stream.indexOf(10, offset);
-      const [oid, type, length] = stream.subarray(offset, end).toString().split(" ");
-      const size = Number(length);
-      offset = end + 1;
-      if (
-        !oid ||
-        end < 0 ||
-        !Number.isSafeInteger(size) ||
-        size < 0 ||
-        offset + size >= stream.length
-      )
-        fail("ARCHIVE_CORRUPT", "Invalid legacy object stream");
+    for (const { oid, type, data } of gitObjects(root)) {
       const value = readJson(
         join(ctx.home, "archive-objects", archive.objects[oid]! + ".json"),
       ) as { type: string; data: string };
-      if (
-        type !== value.type ||
-        !stream.subarray(offset, offset + size).equals(Buffer.from(value.data, "base64"))
-      )
+      if (type !== value.type || !data.equals(Buffer.from(value.data, "base64")))
         fail("ARCHIVE_CORRUPT", "Legacy object differs from durable archive");
-      offset += size + 1;
     }
     return {
       root: objectRoot,
