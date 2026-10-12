@@ -2,7 +2,7 @@ name: Linux Node 20 checks
 on:
   pull_request:
   push:
-    branches: [main, feat/grok-risk-assessment]
+    branches: [main, feat/grok-risk-assessment, chore/npm-release-setup, changeset-release/main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20.19.2
@@ -23,19 +24,27 @@ jobs:
       - name: Filesystem metadata capabilities
         run: python3 -I -c "import os; assert hasattr(os, 'listxattr') and hasattr(os, 'getxattr')"
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Branch-owned release intent
+        if: github.event_name == 'pull_request'
+        env:
+          SKILLTREE_CHANGESET_BASE: origin/${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=100 origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+          bun run changeset:check
       - run: bun run check
       - name: Real split-device overlayfs and bind-mount regressions
         run: sudo env "PATH=$PATH" bash scripts/overlayfs-check.sh
       - run: bun run build:compile
       - name: Portable and compiled workflows; isolated runner restore
         run: |
-          export SKILLTREE_DEMO_NODE="$(command -v node)"
+          SKILLTREE_DEMO_NODE="$(command -v node)"
+          export SKILLTREE_DEMO_NODE
           bun run demo
           SKILLTREE_DEMO_ENTRY=bin/skilltree.mjs bun run demo
           bun run demo:restore
-      - name: Local package launch
+      - name: Reviewed portable package staging and cold Node20 execution
+        env:
+          npm_config_cache: ${{ runner.temp }}/skilltree-npm
         run: |
-          export npm_config_cache="$RUNNER_TEMP/skilltree-npm"
-          npm pack --ignore-scripts --json > "$RUNNER_TEMP/skilltree-pack.json"
-          skilltree_package="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1]))[0].filename)' "$RUNNER_TEMP/skilltree-pack.json")"
-          npx --yes --package="$PWD/$skilltree_package" skilltree --help
+          bun run release:stage -- --dir "$RUNNER_TEMP/skilltree-package"
+          bun run release:smoke -- "$RUNNER_TEMP/skilltree-package"

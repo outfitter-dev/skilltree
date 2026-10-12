@@ -8,3 +8,6 @@ coverage/
 !.env.example
 .cache/
 *.log
+
+# Local reviewed release staging
+.release/

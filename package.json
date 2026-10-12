@@ -1,23 +1,39 @@
 {
   "name": "@outfitter/skilltree",
   "version": "0.1.0-rc.0",
-  "private": true,
   "description": "Git-backed skill synchronization with explicit content approvals and local-edit preservation.",
+  "homepage": "https://github.com/outfitter-dev/skilltree#readme",
+  "bugs": {
+    "url": "https://github.com/outfitter-dev/skilltree/issues"
+  },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/outfitter-dev/skilltree.git"
+  },
   "bin": {
     "skilltree": "bin/skilltree.mjs"
   },
   "files": [
     "bin/",
     "dist/cli.mjs",
-    "dist/bin/",
     "README.md",
     "LICENSE",
     "docs/",
     "skills/",
-    "agents/"
+    "agents/",
+    "CHANGELOG.md",
+    "docs/releases.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
   ],
   "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "dev": "bun src/cli.ts",
     "build": "bun scripts/build.ts",
@@ -31,17 +47,28 @@
     "build:compile": "bun scripts/compile.ts",
     "test:integration": "bun test --timeout 30000 tests/integration.test.ts",
     "demo": "bun scripts/demo.ts",
-    "demo:restore": "bun scripts/restore-demo.ts"
-  },
-  "dependencies": {
-    "yaml": "2.8.3",
-    "zod": "4.3.5"
+    "demo:restore": "bun scripts/restore-demo.ts",
+    "changeset": "changeset",
+    "version:packages": "changeset version && bun install --lockfile-only --ignore-scripts",
+    "release:stage": "bun scripts/release.ts stage",
+    "release:policy": "bun scripts/release.ts policy",
+    "release:publish": "bun scripts/release.ts publish",
+    "release:bootstrap": "bun scripts/release.ts bootstrap",
+    "release:verify": "bun scripts/release.ts verify",
+    "release:smoke": "bun scripts/package-smoke.ts",
+    "changeset:check": "bun scripts/changeset-check.ts",
+    "prepublishOnly": "node scripts/publish-guard.mjs"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.2",
     "@types/bun": "1.4.0",
+    "@types/semver": "7.7.1",
     "oxfmt": "0.54.0",
     "oxlint": "1.69.0",
-    "typescript": "5.9.3"
+    "semver": "7.7.3",
+    "typescript": "5.9.3",
+    "yaml": "2.8.3",
+    "zod": "4.3.5"
   },
   "engines": {
     "bun": ">=1.4.2",
