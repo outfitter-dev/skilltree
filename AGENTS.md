@@ -34,7 +34,7 @@ bun run format:fix
 
 Keep private planning notes, personal details beyond the authorized license attribution, machine paths, credentials, environment audits, and coordination transcripts out of tracked files. Review new files and dependency metadata before public pushes.
 
-Do not publish packages, configure credentials, alter organization access/security, or add release/deployment workflows without explicit authorization. The project uses the MIT License; preserve its notice.
+Package publication and release automation require explicit authorization. Use the reviewed contract in `docs/releases.md`; package-facing changes need a branch-owned Changeset. Do not provision credentials, npm trusted-publisher access, protected release environments, or organization/security settings without action-time approval. The project uses the MIT License; preserve its notice.
 
 `AGENTS.md` is canonical; keep `CLAUDE.md` as a symlink to it.
 
