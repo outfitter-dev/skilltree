@@ -9,6 +9,7 @@ import {
   releaseRepository,
   workflowPassed,
   hasChangelogHeading,
+  generatedVersionPr,
   allChangesetsAtBoundary,
   hasInstallHook,
   releaseCiWaitAttempts,
@@ -144,8 +145,7 @@ function checkPassed(expected: ExpectedCheck) {
     releaseRepository +
     "/actions/workflows/check.yml/runs?per_page=100&head_sha=" +
     expected.sha +
-    "&event=" +
-    expected.event;
+    (expected.versionPr !== undefined ? "" : "&event=" + expected.event);
   const runs = gh(path).workflow_runs as WorkflowEvidence[];
   return workflowPassed(runs, expected);
 }
@@ -162,12 +162,11 @@ async function labels() {
     number: number;
     title: string;
     user: { login: string };
-    head: { sha: string };
+    head: { sha: string; ref: string; repo: { full_name: string } };
+    base: { ref: string; repo: { full_name: string } };
     labels: { name: string }[];
   }[];
-  const pr = prs.find(
-    (p) => p.title === "chore(release): version packages" && p.user.login === "github-actions[bot]",
-  );
+  const pr = prs.find((p) => generatedVersionPr({ pull_request: p }));
   if (!pr) throw new Error("Expected generated version PR unavailable");
   const content = gh("repos/" + releaseRepository + "/contents/package.json?ref=" + pr.head.sha);
   const proposed = JSON.parse(Buffer.from(content.content, "base64").toString()).version as string;
@@ -194,6 +193,23 @@ async function labels() {
   const add = wanted.filter(
     (l) => !pr.labels.some((p) => p.name.startsWith(l.split(":")[0] + ":")),
   );
+  if (args.includes("--dry-run")) {
+    console.log(
+      JSON.stringify(
+        {
+          pr: pr.number,
+          head: pr.head.sha,
+          labels: add,
+          workflow: "check.yml",
+          ref: "changeset-release/main",
+          inputs: { version_pr: String(pr.number), version_sha: pr.head.sha },
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
   for (const name of add) {
     try {
       gh("repos/" + releaseRepository + "/labels/" + encodeURIComponent(name));
@@ -218,6 +234,22 @@ async function labels() {
       "repos/" + releaseRepository + "/issues/" + pr.number + "/labels",
       ...add.flatMap((l) => ["-f", "labels[]=" + l]),
     ]);
+  // GITHUB_TOKEN-created version PRs otherwise require a separate CI approval.
+  // Dispatch the read-only checks with the exact API-verified PR head as input.
+  run("gh", [
+    "workflow",
+    "run",
+    "check.yml",
+    "--repo",
+    releaseRepository,
+    "--ref",
+    "changeset-release/main",
+    "-f",
+    "version_pr=" + pr.number,
+    "-f",
+    "version_sha=" + pr.head.sha,
+  ]);
+  console.log("Dispatched exact-head checks for generated version PR #" + pr.number);
 }
 async function policy() {
   clean();
@@ -242,18 +274,12 @@ async function policy() {
     created_at: string;
     title: string;
     body: string;
-    head: { ref: string; sha: string };
-    base: { ref: string };
+    head: { ref: string; sha: string; repo: { full_name: string } };
+    base: { ref: string; repo: { full_name: string } };
     user: { login: string };
     labels: { name: string }[];
   }[];
-  const pr = pulls.find(
-    (p) =>
-      p.merged_at &&
-      p.head.ref === "changeset-release/main" &&
-      p.base.ref === "main" &&
-      p.title === "chore(release): version packages",
-  );
+  const pr = pulls.find((p) => p.merged_at && generatedVersionPr({ pull_request: p }));
   let passed = false;
   for (let attempt = 0; attempt < releaseCiWaitAttempts; attempt++) {
     passed =
@@ -263,6 +289,7 @@ async function policy() {
           sha: pr.head.sha,
           branch: pr.head.ref,
           event: "pull_request",
+          versionPr: pr.number,
           created: pr.created_at,
           merged: pr.merged_at!,
         }));

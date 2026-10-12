@@ -1,11 +1,24 @@
 name: Linux Node 20 checks
+run-name: ${{ inputs.version_pr != '' && format('Skilltree version PR {0} {1}', inputs.version_pr, github.sha) || github.event.pull_request.title || github.event.head_commit.message || 'Skilltree checks' }}
 on:
   pull_request:
   push:
     branches: [main, feat/grok-risk-assessment, chore/npm-release-setup, changeset-release/main]
   workflow_dispatch:
+    inputs:
+      version_pr:
+        description: Generated version PR number; required for checks on changeset-release/main
+        required: false
+        default: ""
+        type: string
+      version_sha:
+        description: Exact generated version PR head; required for version-branch checks
+        required: false
+        default: ""
+        type: string
 permissions:
   contents: read
+  pull-requests: read
 jobs:
   linux-node20:
     runs-on: ubuntu-24.04
@@ -24,6 +37,13 @@ jobs:
       - name: Filesystem metadata capabilities
         run: python3 -I -c "import os; assert hasattr(os, 'listxattr') and hasattr(os, 'getxattr')"
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Verify dispatched generated version PR and exact head
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/changeset-release/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKILLTREE_VERSION_PR: ${{ inputs.version_pr }}
+          SKILLTREE_VERSION_SHA: ${{ inputs.version_sha }}
+        run: bun scripts/version-ci.ts
       - name: Branch-owned release intent
         if: github.event_name == 'pull_request'
         env:

@@ -84,6 +84,7 @@ export interface WorkflowEvidence {
   conclusion: string | null;
   repository: { full_name: string };
   head_repository: { full_name: string };
+  display_title?: string;
 }
 export interface ExpectedCheck {
   sha: string;
@@ -91,6 +92,7 @@ export interface ExpectedCheck {
   event: "push" | "pull_request";
   created?: string;
   merged?: string;
+  versionPr?: number;
 }
 export function workflowPassed(runs: WorkflowEvidence[], expected: ExpectedCheck): boolean {
   const eligible = runs.filter(
@@ -100,7 +102,12 @@ export function workflowPassed(runs: WorkflowEvidence[], expected: ExpectedCheck
       r.path === ".github/workflows/check.yml" &&
       r.head_sha === expected.sha &&
       r.head_branch === expected.branch &&
-      r.event === expected.event &&
+      (r.event === expected.event ||
+        (expected.event === "pull_request" &&
+          expected.branch === "changeset-release/main" &&
+          expected.versionPr !== undefined &&
+          r.event === "workflow_dispatch" &&
+          r.display_title === versionCiTitle(expected.versionPr, expected.sha))) &&
       (!expected.created || Date.parse(r.created_at) >= Date.parse(expected.created)) &&
       (!expected.merged || Date.parse(r.created_at) <= Date.parse(expected.merged)),
   );
@@ -174,7 +181,7 @@ export function generatedVersionPr(event: unknown): boolean {
   )?.pull_request;
   return (
     !!p &&
-    p.title === "chore(release): version packages" &&
+    generatedReleaseTitle(p.title) &&
     p.user?.login === "github-actions[bot]" &&
     p.head?.ref === "changeset-release/main" &&
     p.head.repo?.full_name === releaseRepository &&
@@ -184,3 +191,29 @@ export function generatedVersionPr(event: unknown): boolean {
 }
 export const releaseCiWaitAttempts = 120;
 export const releaseCiPollMs = 10000;
+
+export function generatedReleaseTitle(title: unknown): boolean {
+  return (
+    typeof title === "string" &&
+    /^chore\(release\): version packages(?: \((?:alpha|beta|rc|canary|next)\))?$/.test(title)
+  );
+}
+export function versionCiTitle(pr: number, sha: string): string {
+  return `Skilltree version PR ${pr} ${sha}`;
+}
+export function versionCiAllowed(
+  context: { repository: string; ref: string; event: string; sha: string; expectedSha: string },
+  pr: unknown,
+): boolean {
+  const pull = pr as { state?: string; head?: { sha?: string } } | null;
+  return (
+    context.repository === releaseRepository &&
+    context.ref === "refs/heads/changeset-release/main" &&
+    context.event === "workflow_dispatch" &&
+    /^[a-f0-9]{40}$/.test(context.sha) &&
+    context.sha === context.expectedSha &&
+    generatedVersionPr({ pull_request: pr }) &&
+    pull?.state === "open" &&
+    pull.head?.sha === context.sha
+  );
+}

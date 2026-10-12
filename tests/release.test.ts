@@ -5,6 +5,9 @@ import {
   evaluateRelease,
   workflowPassed,
   hasChangelogHeading,
+  generatedReleaseTitle,
+  versionCiAllowed,
+  versionCiTitle,
   allChangesetsAtBoundary,
   hasInstallHook,
   packageFacing,
@@ -232,4 +235,100 @@ test("release policy wait covers CI timeout and a scheduling margin", () => {
   expect(releaseCiWaitAttempts * releaseCiPollMs).toBeGreaterThanOrEqual(
     (check.jobs["linux-node20"]["timeout-minutes"] + 5) * 60000,
   );
+});
+
+test("generated release titles accept only the configured Changesets title and known channels", () => {
+  for (const title of [
+    "chore(release): version packages",
+    "chore(release): version packages (rc)",
+    "chore(release): version packages (beta)",
+  ])
+    expect(generatedReleaseTitle(title)).toBe(true);
+  for (const title of [
+    "chore(release): version packages extra",
+    "chore(release): version packages (surprise)",
+    "chore(release): version packages (rc) extra",
+    null,
+  ])
+    expect(generatedReleaseTitle(title)).toBe(false);
+});
+test("version dispatch validates the actual open bot PR and a frozen exact head", () => {
+  const sha = "a".repeat(40);
+  const pr = {
+    state: "open",
+    title: "chore(release): version packages (rc)",
+    user: { login: "github-actions[bot]" },
+    head: { sha, ref: "changeset-release/main", repo: { full_name: "outfitter-dev/skilltree" } },
+    base: { ref: "main", repo: { full_name: "outfitter-dev/skilltree" } },
+  };
+  const context = {
+    repository: "outfitter-dev/skilltree",
+    ref: "refs/heads/changeset-release/main",
+    event: "workflow_dispatch",
+    sha,
+    expectedSha: sha,
+  };
+  expect(versionCiAllowed(context, pr)).toBe(true);
+  for (const changed of [
+    { repository: "other/project" },
+    { ref: "refs/heads/main" },
+    { event: "pull_request" },
+    { expectedSha: "b".repeat(40) },
+    { sha: "invalid" },
+  ])
+    expect(versionCiAllowed({ ...context, ...changed }, pr)).toBe(false);
+  for (const changed of [
+    { state: "closed" },
+    { user: { login: "someone" } },
+    { head: { ...pr.head, sha: "b".repeat(40) } },
+    { head: { ...pr.head, repo: { full_name: "fork/skilltree" } } },
+  ])
+    expect(versionCiAllowed(context, { ...pr, ...changed })).toBe(false);
+});
+test("only named exact generated-PR dispatches qualify; newest failure still holds", () => {
+  const versionExpected = { ...expected, versionPr: 4 };
+  const dispatch = {
+    ...historic,
+    id: 12,
+    event: "workflow_dispatch",
+    display_title: versionCiTitle(4, historic.head_sha),
+  };
+  expect(workflowPassed([dispatch], versionExpected)).toBe(true);
+  expect(workflowPassed([dispatch], expected)).toBe(false);
+  for (const title of [
+    "Skilltree checks",
+    versionCiTitle(5, historic.head_sha),
+    versionCiTitle(4, "b".repeat(40)),
+  ])
+    expect(workflowPassed([{ ...dispatch, display_title: title }], versionExpected)).toBe(false);
+  expect(
+    workflowPassed([dispatch, { ...historic, id: 13, conclusion: "failure" }], versionExpected),
+  ).toBe(false);
+  expect(
+    workflowPassed(
+      [historic, { ...dispatch, status: "in_progress", conclusion: null }],
+      versionExpected,
+    ),
+  ).toBe(false);
+  expect(
+    workflowPassed([{ ...dispatch, head_branch: "main" }], {
+      ...versionExpected,
+      branch: "main",
+      event: "push",
+    }),
+  ).toBe(false);
+});
+test("generated version checks use a scoped read-only dispatch without a new credential", () => {
+  const check = parse(fs.readFileSync(".github/workflows/check.yml", "utf8"));
+  const release = parse(fs.readFileSync(".github/workflows/release.yml", "utf8"));
+  expect(check.permissions).toEqual({ contents: "read", "pull-requests": "read" });
+  expect(check.on.workflow_dispatch.inputs.version_pr.type).toBe("string");
+  expect(check.on.workflow_dispatch.inputs.version_sha.type).toBe("string");
+  expect(check["run-name"]).toContain("Skilltree version PR {0} {1}");
+  const guard = check.jobs["linux-node20"].steps.find(
+    (s: { run?: string }) => s.run === "bun scripts/version-ci.ts",
+  );
+  expect(guard.if).toContain("github.ref == 'refs/heads/changeset-release/main'");
+  expect(release.jobs.version.permissions.actions).toBe("write");
+  expect(release.jobs.publish.if).toContain("github.ref == 'refs/heads/main'");
 });
