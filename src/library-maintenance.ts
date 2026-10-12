@@ -1,3 +1,4 @@
+import { reservedScratch } from "./reserved-scratch";
 import * as fs from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
@@ -138,7 +139,8 @@ export function compactLibrary(
 } {
   const candidates: { root: string; kind: string; files: number }[] = [],
     held: { root: string; reason: string }[] = [];
-  if (libraryPending(ctx)) fail("RECOVERY_REQUIRED", "Pending directory restore blocks retention");
+  if (!options.dryRun && libraryPending(ctx))
+    fail("RECOVERY_REQUIRED", "Pending directory restore blocks retention");
   const hold = (root: string, error: unknown) =>
     held.push({ root, reason: error instanceof Error ? error.message : "Owned cleanup held" });
   if (options.retainedDirectories) {
@@ -192,10 +194,17 @@ export function compactLibrary(
       }
   }
   if (options.backupScratch) {
+    const reserved = reservedScratch(ctx.home, !!options.dryRun);
+    candidates.push(...reserved.candidates);
+    held.push(...reserved.held);
     const root = join(ctx.home, "library-blobs"),
       records = join(ctx.home, "library-temp-records"),
       seen = new Set<string>();
     const clean = (name: string) => {
+      if (reserved.claimed.has(name)) {
+        seen.add(name + ".json");
+        return;
+      }
       const path = assertNoSymlinks(join(root, name)),
         marker = join(records, name + ".json");
       seen.add(name + ".json");
@@ -299,7 +308,7 @@ export function compactLibrary(
       for (const name of fs.readdirSync(root).filter((n) => n.endsWith(".tmp"))) clean(name);
     if (exists(records))
       for (const name of fs.readdirSync(records)) {
-        if (seen.has(name)) continue;
+        if (seen.has(name) || reserved.claimed.has(name)) continue;
         if (/^[a-f0-9]{64}\.bin\.[a-f0-9-]{36}\.tmp\.json$/.test(name)) clean(name.slice(0, -5));
         else
           hold(

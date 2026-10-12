@@ -1,9 +1,5 @@
-import {
-  rememberRetained,
-  finishRetained,
-  rememberBlobTemp,
-  forgetBlobTemp,
-} from "./library-maintenance";
+import { prepareBlobIntent, checkpointBlobCreation, type BoundaryHook } from "./scratch-journal";
+import { rememberRetained, finishRetained, forgetBlobTemp } from "./library-maintenance";
 import * as fs from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -96,6 +92,7 @@ export function putBlob(
   key: string,
   bytes: Buffer,
   afterIntent?: (temp: string) => void,
+  boundary?: BoundaryHook,
 ): void {
   const path = blobPath(home, key);
   if (exists(path)) {
@@ -103,17 +100,22 @@ export function putBlob(
     return;
   }
   fs.mkdirSync(dirname(path), { recursive: true });
-  const temp = path + "." + randomUUID() + ".tmp";
+  const intent = prepareBlobIntent(home, key, bytes, boundary),
+    temp = intent.temp;
   const fd = fs.openSync(temp, "wx", 0o600);
   try {
-    rememberBlobTemp(home, temp, key, bytes);
+    boundary?.("temp-created", temp);
+    checkpointBlobCreation(home, intent.row, fd, boundary);
+    boundary?.("created-durable", temp);
     afterIntent?.(temp);
     fs.writeFileSync(fd, bytes);
     fs.fsyncSync(fd);
+    boundary?.("payload-written", temp);
   } finally {
     fs.closeSync(fd);
   }
   fs.renameSync(temp, path);
+  boundary?.("blob-published", path);
   forgetBlobTemp(home, temp);
 }
 export function directoryTree(home: string, root: string, persist = false): DirectoryTree {

@@ -1,3 +1,4 @@
+import { compactLibrary } from "./library-maintenance";
 import { checkedPython, type PythonIdentity } from "./filesystem-capabilities";
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -384,6 +385,13 @@ export function execute(
         `Complete backup unavailable: ${error instanceof Error ? error.message : "Metadata inspection failed"}`,
       );
     }
+    const backupScratch = compactLibrary(ctx, { backupScratch: true, dryRun: true });
+    for (const item of backupScratch.held)
+      issues.push(`Held backup scratch: ${item.root}: ${item.reason}`);
+    if (backupScratch.candidates.length)
+      warnings.push(
+        "Verified abandoned backup scratch is available; inspect compact --backup-scratch --dry-run",
+      );
     for (const name of exists(ctx.manifest.destination)
       ? fs.readdirSync(ctx.manifest.destination)
       : [])
@@ -461,6 +469,7 @@ export function execute(
       issues,
       warnings,
       metadataInspector,
+      backupScratch,
       adapter: `${ctx.manifest.adapter}; filesystem preservation; catalog pickup unverified`,
       policy: ctx.manifest.policy,
       primary: ctx.manifest.primary,
