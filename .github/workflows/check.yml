@@ -21,9 +21,11 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Filesystem metadata capabilities
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends attr acl
+        run: python3 -I -c "import os; assert hasattr(os, 'listxattr') and hasattr(os, 'getxattr')"
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run check
+      - name: Real split-device overlayfs and bind-mount regressions
+        run: sudo env "PATH=$PATH" bash scripts/overlayfs-check.sh
       - run: bun run build:compile
       - name: Portable and compiled workflows; isolated runner restore
         run: |

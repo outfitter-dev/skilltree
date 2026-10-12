@@ -64,6 +64,9 @@ import { probeSkills } from "./skills-adapter";
 
 export interface Options {
   keepCurrent?: boolean;
+  quietHost?: boolean;
+  retainedDirectories?: boolean;
+  backupScratch?: boolean;
   snapshot?: string;
   expect?: string;
   dryRun?: boolean;
@@ -365,12 +368,21 @@ export function execute(
     if (libraryPending(ctx))
       issues.push("Interrupted whole-directory restoration; run recover --dry-run");
     if (pending(ctx)) issues.push("Interrupted replacement; run recover");
-    for (const name of fs.readdirSync(ctx.manifest.destination))
+    try {
+      directoryTree(ctx.home, ctx.manifest.destination);
+    } catch (error) {
+      issues.push(
+        `Complete backup unavailable: ${error instanceof Error ? error.message : "Metadata inspection failed"}`,
+      );
+    }
+    for (const name of exists(ctx.manifest.destination)
+      ? fs.readdirSync(ctx.manifest.destination)
+      : [])
       if (name.startsWith(".skilltree-transaction-")) {
         const root = join(ctx.manifest.destination, name);
-        if (exists(join(root, "backup/SKILL.md")) || exists(join(root, "stage/SKILL.md")))
+        if (fs.readdirSync(root).length > 0)
           issues.push(
-            "Legacy catalog-visible storage remains; run migrate-storage --dry-run and reconcile recognized ownership",
+            `Legacy catalog-visible storage remains: ${root}; run migrate-storage --dry-run and reconcile recognized ownership`,
           );
         else
           warnings.push(
@@ -480,7 +492,13 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     return { outcome: "BACKED_UP", snapshot: point.id, hash: point.hash };
   }
   if (command === "revert")
-    return revertLibrary(ctx, required(options.snapshot, "snapshot"), options.expect, dryRun);
+    return revertLibrary(
+      ctx,
+      required(options.snapshot, "snapshot"),
+      options.expect,
+      dryRun,
+      options.quietHost,
+    );
   if (command === "configure") return configure(ctx, options);
   if (command === "migrate-storage") return migrateStorage(ctx, dryRun);
   if (command === "compact") return compact(ctx, options);
@@ -658,7 +676,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     });
   if (command === "recover")
     return libraryPending(ctx)
-      ? recoverLibrary(ctx, dryRun, options.keepCurrent, options.expect)
+      ? recoverLibrary(ctx, dryRun, options.keepCurrent, options.expect, options.quietHost)
       : recover(ctx, dryRun);
   const entry = selection(ctx, args[0] ?? fail("USAGE", `${command} requires a selection ID`));
   if (command === "assign") {

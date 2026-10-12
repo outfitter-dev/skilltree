@@ -32,13 +32,17 @@ Review the added/removed/changed path diff with the owner before a whole-directo
 
 An interrupted directory revert shares the `recover --dry-run` / `recover` path with skill replacement recovery. Recognized restores finish or roll back; unknown newer bytes hold for inspection. Keep journals and retained directories. `restore` rebuilds generated Git caches from archives and does not restore library contents. The standalone installer restores runner files, not the library.
 
-Whole-directory recovery points live outside the library in durable state and are not discarded by per-skill backup/cache retention. Keep them with their blob store. Unsupported ACLs/xattrs, special files/permissions, hardlinks, external links and owner changes fail closed. macOS-managed provenance and timestamps are excluded from the portable restored metadata contract. Linux requires attr/acl probes. See the bundled [Gardener profile](../../agents/gardener.md).
+Whole-directory recovery points live outside the library in durable state and are not discarded by per-skill backup/cache retention. Keep them with their blob store. Unsupported ACLs/xattrs, special files/permissions, hardlinks, external links and owner changes fail closed. macOS-managed provenance and timestamps are excluded from the portable restored metadata contract. Linux requires Python 3 with standard-library xattr APIs. See the bundled [Gardener profile](../../agents/gardener.md).
 
 For an interrupted revert that finds newer supported current data, an explicitly authorized keep-current recovery is available:
 
 ```sh
 skilltree recover --home /absolute/state --keep-current --dry-run
-skilltree recover --home /absolute/state --keep-current --expect <reviewed-current-hash>
+skilltree recover --home /absolute/state --keep-current --expect <reviewed-current-hash> --quiet-host
 ```
 
 It verifies a new recovery point before canceling the interrupted restore, keeps current directory bytes and retained prior data, and leaves ownership drift for explicit reconciliation. It does not overwrite newer edits. Repeated completed reverts with unchanged directory and ownership state return CURRENT.
+
+Actual whole-directory revert/recovery requires `--quiet-host` after stopping catalog pickup and other writers through verification. The flag is an attestation, not host control. Doctor reports complete backup capability and offending paths; unsupported outside-lock entries intentionally block backup. Linux uses bundled inspection through Python 3 standard-library xattr APIs, and does not require attr/acl commands.
+
+Explicit `compact --retained-directories --dry-run` and `compact --backup-scratch --dry-run` inspect redundant verified owned copies or checkpointed temps. Run the actual chosen policy only when requested. All recovery points/blobs are retained; unknown, changed, partial or live-owner material holds. Linux timestamps are not restored. Use `--runtime-root` to isolate tests because the default Linux lock uses the passwd home independently of `$HOME`.

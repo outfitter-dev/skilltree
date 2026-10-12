@@ -1,3 +1,4 @@
+import { compactLibrary } from "./library-maintenance";
 import * as fs from "node:fs";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -315,8 +316,14 @@ export function compact(ctx: Context, options: Options): unknown {
     (!Number.isSafeInteger(options.retainBackups) || options.retainBackups < 0)
   )
     fail("USAGE", "Retain count must be a nonnegative integer");
-  if (!options.caches && !options.scratch && options.retainBackups === undefined)
-    fail("USAGE", "Choose explicit --caches, --scratch, or --retain-backups policy");
+  if (
+    !options.caches &&
+    !options.scratch &&
+    options.retainBackups === undefined &&
+    !options.retainedDirectories &&
+    !options.backupScratch
+  )
+    fail("USAGE", "Choose an explicit documented compact policy");
   const candidates: {
     root: string;
     kind: string;
@@ -492,19 +499,25 @@ export function compact(ctx: Context, options: Options): unknown {
       if (candidate.excluded.includes("owner.json")) fs.unlinkSync(candidate.marker);
       fs.rmdirSync(candidate.root);
     }
+  const library = compactLibrary(ctx, options);
   return {
     outcome: options.dryRun ? "WOULD_COMPACT" : "COMPACTED",
     policy: {
       caches: !!options.caches,
       scratch: !!options.scratch,
       retainBackups: options.retainBackups ?? null,
+      retainedDirectories: !!options.retainedDirectories,
+      backupScratch: !!options.backupScratch,
     },
-    candidates: candidates.map((c) => ({
-      root: c.root,
-      kind: c.kind,
-      files: Object.keys(c.record.files).length,
-    })),
-    held,
+    candidates: [
+      ...library.candidates,
+      ...candidates.map((c) => ({
+        root: c.root,
+        kind: c.kind,
+        files: Object.keys(c.record.files).length,
+      })),
+    ],
+    held: [...held, ...library.held],
     packed,
   };
 }

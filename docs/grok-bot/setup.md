@@ -4,21 +4,21 @@ Status: **proposed Grok integration**. The local release candidate implements a 
 
 ## Layout
 
-| What                       | Path                              | Why                                                                                                        |
-| -------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Manifest, lock, reports    | `/workspace/skilltree/`           | Always restored after a Computer Update                                                                    |
-| Source clones              | `/workspace/skilltree/repos/`     | Same; don't use folder names the sync skips (`node_modules`, `dist`, `build`, `target`, `.venv`, `.cache`) |
-| Runner (optional)          | `~/.local/bin/skilltree`          | First on PATH; a convenience, not the source of truth                                                      |
-| Run lock and runtime state | `~/.local/state/skilltree/`       | Not restored, so a stale lock can't come back from a snapshot                                              |
-| Destination                | `/home/box/agent-data/workflows/` | The shared skill library every bot on the computer reads                                                   |
+| What                       | Path                             | Why                                                                                                        |
+| -------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Manifest, lock, reports    | `/workspace/skilltree/`          | Always restored after a Computer Update                                                                    |
+| Source clones              | `/workspace/skilltree/repos/`    | Same; don't use folder names the sync skips (`node_modules`, `dist`, `build`, `target`, `.venv`, `.cache`) |
+| Runner (optional)          | `~/.local/bin/skilltree`         | First on PATH; a convenience, not the source of truth                                                      |
+| Run lock and runtime state | `~/.local/state/skilltree/`      | Not restored, so a stale lock can't come back from a snapshot                                              |
+| Destination                | `/home/box/sand-data/workflows/` | The shared skill library every bot on the computer reads                                                   |
 
 ## Install (proposed)
 
-1. Confirm prerequisites: `git --version` and `node --version` (20 or newer). Both ship with the image.
+1. Confirm the actual canonical destination with `realpath`; aliases are refused. Confirm prerequisites: `git --version` and `node --version` (20 or newer). Confirm Python 3 with `os.listxattr`/`os.getxattr` as well. The metadata inspector is embedded in the runner; it does not need getfattr/getfacl. `doctor` checks actual backup capability and reports an offending path. If Python is missing, stop and request an explicit approved, durable Python dependency installation; do not install on the live host autonomously.
 2. Install a pinned runner to `~/.local/bin/skilltree`, either a standalone build or a Node 20-compatible package.
 3. Configure a verified destination adapter before initializing the live host. The current `init --dest ... --exclusive-dest` supports coordinated filesystem fixtures only; the shared host path is not verified for it.
 4. Register sources and inventory exact paths. A user-requested `select --install` approves that installation; autonomous selections are held. Do not use the filesystem adapter on the live host until its write integration is verified.
-5. `skilltree doctor` should report OK for the runtime, paths, write access and lock.
+5. `skilltree doctor` should report OK for runtime, paths, write access, lock and complete-library backup capability. Unknown nonempty legacy catalog folders are errors requiring inspection.
 6. `skilltree sync --dry-run`, then stage with `sync`, review and approve the exact candidate hash, and explicitly `apply`. Sync never deploys in this release candidate.
 
 ## Schedule
@@ -41,3 +41,17 @@ There is no cron on a Grok Bot computer. Create a Grok Bot routine on the bot th
 - **When:** one event per run with UPDATED, CONFLICT, HELD or ERROR. A clean run sends nothing.
 - **Event contents:** the run id, the result for each skill, held reasons, a diff summary and lock changes.
 - The receiver dedups on the run id.
+
+## Directory recovery and runtime prerequisites
+
+Whole-directory `revert` and journal recovery require an explicit `--quiet-host` attestation on actual commands. Stop catalog pickup and all other writers for the entire backup/revert/recovery interval. The rename-based swap temporarily removes the directory; a host that recreates it causes a held transaction. The flag documents a caller-established precondition, not a mechanism to stop the host or a concurrency guarantee. Keep the journal and prior directory when held.
+
+Python 3 is an explicit Linux runtime dependency for direct non-following xattr inspection, including POSIX ACL xattrs. Validate the original unmodified release on the target runtime. A temporary PATH containing extracted attr/acl tools is not sufficient acceptance evidence. Durable approved dependency provision and revalidation after Computer Update must be settled before live writes. No dependency or live agent was installed by this project.
+
+The default Linux runtime lock directory uses the operating-system account's passwd home, not `$HOME`; set `--runtime-root` for fixtures or custom placement. A TMPDIR/HOME override alone does not isolate the lock domain.
+
+Installer prefixes are immutable and content-specific. For an approved runner upgrade, choose a new explicit prefix such as `/absolute/runners/<commit-or-artifact-hash>`, pass the exact local artifact and SHA256, and use a separate durable `--state-home`. Verify the new runner, then explicitly select its launcher/PATH; the old prefix and receipt remain available. Installation into an occupied prefix with different bytes holds. Neither install nor `--restore` upgrades Python or restores other OS dependencies.
+
+Whole-library restoration preserves bytes, supported modes/ownership and symlink text. Linux file and directory mtime/atime/ctime are not restored; a host that uses timestamps may detect restored data as changed. No timestamp-dependent host acceptance is claimed.
+
+Retained stage/prior copies can grow. Inspect `compact --retained-directories --dry-run` before explicitly requesting cleanup; only transaction-receipt-owned copies exactly matching verified recovery points qualify. `compact --backup-scratch --dry-run` similarly finds complete checkpointed temps with proven exited writers. Changed, unowned, partially written or live-owner material stays held. All durable recovery points and their blobs remain retained. No cleanup is scheduled.

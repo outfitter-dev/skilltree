@@ -1,3 +1,4 @@
+import { sameMount } from "./filesystem-capabilities";
 import { createLibrarySnapshot, directoryTree, libraryHash } from "./library-backup";
 import { rememberBackup } from "./ownership";
 import * as fs from "node:fs";
@@ -59,14 +60,7 @@ export function storage(ctx: Context, create: boolean): string {
     fs.mkdirSync(root, { mode: 0o700 });
     atomicJson(marker, { version: 1, destination: ctx.manifest.destination });
   }
-  if (
-    fs.statSync(exists(root) ? root : dirname(root)).dev !==
-    fs.statSync(
-      exists(ctx.manifest.destination)
-        ? ctx.manifest.destination
-        : dirname(ctx.manifest.destination),
-    ).dev
-  )
+  if (!sameMount(root, ctx.manifest.destination))
     fail("STORAGE_FILESYSTEM", "Transaction storage must share the destination filesystem");
   fs.accessSync(exists(root) ? root : dirname(root), fs.constants.R_OK | fs.constants.W_OK);
   return root;

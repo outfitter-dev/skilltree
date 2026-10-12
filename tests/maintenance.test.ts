@@ -90,8 +90,10 @@ test("report-recognized completed legacy storage migrates intact while unknown f
     );
     expect(fs.existsSync(unknown)).toBe(true);
     expect(execute(f.home, "doctor", [])).toMatchObject({
-      outcome: "OK",
-      warnings: expect.arrayContaining([expect.stringContaining("legacy folder")]),
+      outcome: "ERROR",
+      issues: expect.arrayContaining([
+        expect.stringContaining("Legacy catalog-visible storage remains"),
+      ]),
     });
   } finally {
     f.cleanup();

@@ -68,7 +68,7 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 
 Keep the entire state directory, including archives, objects and local history, backed up. Manifest/lock files alone cannot recover local patches. Do not store credentials in source URLs or state. Credential-bearing HTTPS URLs are rejected; public HTTPS and local Git sources are supported.
 
-Apply stages and retains backups in owned `.skilltree-storage-<destination-hash>` storage beside the destination, outside its catalog tree and on the same filesystem. Version 1 journal-owned transactions relocate intact through a restartable location journal before recovery. Completed legacy backups recognized by successful deployment reports can move intact with `migrate-storage`; unknown folders remain retained. `doctor` reports catalog-visible legacy data as errors and empty/unrecognized folders as warnings. Transactions cover one skill. No backup/history garbage collector is enabled.
+Apply stages and retains backups in owned `.skilltree-storage-<destination-hash>` storage beside the destination, outside its catalog tree and on the same filesystem. Version 1 journal-owned transactions relocate intact through a restartable location journal before recovery. Completed legacy backups recognized by successful deployment reports can move intact with `migrate-storage`; unknown folders remain retained. `doctor` reports catalog-visible legacy data as errors and empty folders as warnings and nonempty unrecognized catalog folders as errors. Transactions cover one skill. No backup/history garbage collector is enabled.
 
 New Linux collections use util-linux `flock` on a stable destination-keyed `sync.lock` under `~/.local/state/skilltree`, independent of `TMPDIR`. `--runtime-root` chooses an explicit coordinated domain; tests and demos keep it inside their own fixture. Git children inherit the lock descriptor, retaining exclusion if they outlive the parent. Kernel locks release on final descriptor closure. macOS and legacy collections use explicit stale-recovered directory locking; `init --lock-backend mkdir|flock` chooses the backend. Stop older versions before upgrading locking domains. Runtime directory deletion while writers run invalidates coordination; platform lifetime still needs host verification. These locks coordinate Skilltree writers, not host applications.
 
@@ -107,14 +107,14 @@ Every actual apply verifies a complete supported-directory recovery point before
 skilltree backup --home /absolute/collection --reason 'Before maintenance'
 skilltree backups --home /absolute/collection
 skilltree revert --home /absolute/collection --snapshot <id> --dry-run
-skilltree revert --home /absolute/collection --snapshot <id> --expect <reviewed-current-hash>
+skilltree revert --home /absolute/collection --snapshot <id> --expect <reviewed-current-hash> --quiet-host
 ```
 
 Revert previews added, removed and changed paths, requires the reviewed current hash, and verifies a new current-state recovery point before restoring. It stages outside the catalog and journals the directory swap. `recover` completes recognized interrupted swaps or rolls back the preserved prior directory; newer unknown bytes hold. Latest source/local histories remain retained, while restored deployment baselines are held and approval/candidates cleared. Uncaptured drift stays drift. This can affect outside-lock data, so authorize the whole diff explicitly.
 
 `restore` remains archive materialization for generated Git caches; installer `--restore` rebuilds a runner. Whole-directory `revert` is distinct. Recovery points are retained indefinitely; `compact --retain-backups` never removes them. There is no recovery-point deletion policy installed.
 
-Support covers ordinary same-owner Unix files/directories and resolvable relative in-tree links, basic modes, up to 25,000 entries/200 MB/10 MB per file. Special files/permissions, hardlinks, owner changes, ACLs and unsupported xattrs hold. Linux requires `getfattr`/`getfacl`; macOS uses built-in xattr/ls. macOS-managed provenance and timestamps are not portable restored metadata. Host concurrency, actual Computer Update and power-loss durability remain separate evidence; no unconditional recovery guarantee is made. See the bundled [skill](skills/skilltree/SKILL.md) and [Gardener profile](agents/gardener.md).
+Support covers ordinary same-owner Unix files/directories and resolvable relative in-tree links, basic modes, up to 25,000 entries/200 MB/10 MB per file. Special files/permissions, hardlinks, owner changes, ACLs and unsupported xattrs hold. Linux requires Python 3 with standard-library xattr APIs; macOS uses built-in xattr/ls. macOS-managed provenance and timestamps are not portable restored metadata. Host concurrency, actual Computer Update and power-loss durability remain separate evidence; no unconditional recovery guarantee is made. See the bundled [skill](skills/skilltree/SKILL.md) and [Gardener profile](agents/gardener.md).
 
 ## Configuration and explicit maintenance
 
@@ -187,7 +187,24 @@ For an interrupted revert that finds newer supported current data, an explicitly
 
 ```sh
 skilltree recover --home /absolute/state --keep-current --dry-run
-skilltree recover --home /absolute/state --keep-current --expect <reviewed-current-hash>
+skilltree recover --home /absolute/state --keep-current --expect <reviewed-current-hash> --quiet-host
 ```
 
 It verifies a new recovery point before canceling the interrupted restore, keeps current directory bytes and retained prior data, and leaves ownership drift for explicit reconciliation. It does not overwrite newer edits. Repeated completed reverts with unchanged directory and ownership state return CURRENT.
+
+### Recovery prerequisites and explicit copy cleanup
+
+On Linux, direct metadata inspection is embedded in both runner builds and uses Python 3's standard-library `os.listxattr`/`os.getxattr`, including POSIX ACL xattrs. `getfattr`/`getfacl` are not required. `doctor` nonmutatingly checks the complete directory and names unsupported/unreadable paths or missing Python capability. Missing dependencies require explicit approved durable provision; the runner never installs them. Linux mount IDs distinguish real nested/bind mounts while allowing overlayfs file/directory `st_dev` differences.
+
+Actual whole-directory revert/recovery requires `--quiet-host` after the caller stops catalog pickup and other writers for the complete interval. The directory temporarily disappears during rename; this flag is a caller attestation, not host control or concurrent safety. An unexpected recreated directory holds with all prior data retained. Linux timestamps are not restored; timestamp-driven host behavior remains unverified. Unsupported entries anywhere in the library intentionally block the complete backup; doctor reports their paths. They must be reconciled explicitly, never silently excluded.
+
+```sh
+skilltree compact --home /absolute/state --retained-directories --dry-run
+skilltree compact --home /absolute/state --retained-directories
+skilltree compact --home /absolute/state --backup-scratch --dry-run
+skilltree compact --home /absolute/state --backup-scratch
+```
+
+These separate opt-in policies clean verified receipt-owned stage/prior copies and complete checkpointed temporary blobs with exited owners. They preserve every whole-directory recovery point and blob. Unowned legacy copies, newer notes, corrupt/partial temps and live-owner material hold. No automatic cleanup runs.
+
+The default Linux lock path uses the OS account's passwd home, independent of `$HOME`; fixture/custom placement requires `--runtime-root`. Runner upgrades use a new approved content-specific installer prefix and the exact artifact SHA256; verify it before selecting its launcher. Old prefixes/receipts remain intact. Runner restore does not restore Python or other OS dependencies.

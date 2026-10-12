@@ -1,7 +1,13 @@
+import {
+  rememberRetained,
+  finishRetained,
+  rememberBlobTemp,
+  forgetBlobTemp,
+} from "./library-maintenance";
 import * as fs from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { checkMetadata, mountId, mountTable, sameMount } from "./filesystem-capabilities";
 import { z } from "zod";
 import { fail, hash, lockSchema, type Lock } from "./model";
 import {
@@ -71,55 +77,11 @@ const journalSchema = z
   .strict();
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const blobHash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-function treeDigest(tree: DirectoryTree): string {
+export function treeDigest(tree: DirectoryTree): string {
   return digest({
     exists: tree.exists,
     rows: Object.entries(tree.rows).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   });
-}
-function metadata(root: string, paths: string[]): void {
-  try {
-    if (process.platform === "darwin") {
-      for (const path of paths) {
-        const attrs = execFileSync("/usr/bin/xattr", ["-s", path], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        if (attrs !== "" && attrs !== "com.apple.provenance\n")
-          fail(
-            "BACKUP_UNSUPPORTED",
-            "Extended attributes beyond platform-managed provenance are unsupported",
-          );
-        const acl = execFileSync("/bin/ls", ["-led", path], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        if (/^.{10}\+|^\s*\d+: /m.test(acl))
-          fail("BACKUP_UNSUPPORTED", "ACLs cannot be faithfully restored");
-      }
-    } else if (process.platform === "linux") {
-      const attrs = execFileSync(
-        "getfattr",
-        ["-d", "-m-", "-h", "-P", "-R", "--absolute-names", root],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 10_000_000 },
-      );
-      const acl = execFileSync("getfacl", ["-s", "-c", "-p", "-P", "-R", root], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 10_000_000,
-      });
-      if (attrs.trim() || acl.trim())
-        fail("BACKUP_UNSUPPORTED", "Extended attributes or ACLs cannot be faithfully restored");
-    } else
-      fail("BACKUP_UNSUPPORTED", "Directory recovery is tested only on supported Unix filesystems");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && String(error.code).startsWith("BACKUP_"))
-      throw error;
-    fail(
-      "BACKUP_CAPABILITY",
-      "Complete backup requires readable metadata and Linux attr/acl utilities or macOS xattr/ls",
-    );
-  }
 }
 function blobPath(home: string, key: string): string {
   return assertNoSymlinks(join(home, "library-blobs", hash.parse(key) + ".bin"));
@@ -141,10 +103,12 @@ function putBlob(home: string, key: string, bytes: Buffer): void {
   try {
     fs.writeFileSync(fd, bytes);
     fs.fsyncSync(fd);
+    rememberBlobTemp(home, temp, key);
   } finally {
     fs.closeSync(fd);
   }
   fs.renameSync(temp, path);
+  forgetBlobTemp(home, temp);
 }
 export function directoryTree(home: string, root: string, persist = false): DirectoryTree {
   assertNoSymlinks(root);
@@ -152,6 +116,8 @@ export function directoryTree(home: string, root: string, persist = false): Dire
   const rows: DirectoryTree["rows"] = Object.create(null),
     paths: string[] = [];
   const device = fs.lstatSync(root).dev;
+  const mounts = process.platform === "linux" ? mountTable() : null;
+  const rootMount = mounts ? mountId(root) : null;
   let count = 0,
     bytes = 0;
   function walk(path: string, key: string) {
@@ -161,14 +127,14 @@ export function directoryTree(home: string, root: string, persist = false): Dire
     count++;
     if (
       count > 25000 ||
-      before.dev !== device ||
+      (mounts ? mountId(path) !== rootMount : before.dev !== device) ||
       before.mode & 0o7000 ||
       before.uid !== process.getuid?.() ||
       before.gid !== process.getgid?.()
     )
       fail(
         "BACKUP_UNSUPPORTED",
-        "Entry count, mount, special permissions or ownership exceeds supported recovery limits",
+        `Entry count, mount, special permissions or ownership exceeds supported recovery limits: ${path}`,
       );
     const row: Row = {
       kind: before.isSymbolicLink() ? "link" : before.isDirectory() ? "directory" : "file",
@@ -179,12 +145,22 @@ export function directoryTree(home: string, root: string, persist = false): Dire
     if (before.isSymbolicLink()) {
       const target = fs.readlinkSync(path),
         lexical = resolve(dirname(path), target);
+      let real: string;
+      try {
+        real = fs.realpathSync(lexical);
+      } catch {
+        fail("BACKUP_UNSUPPORTED", `Dangling or unreadable symlink: ${path}`);
+      }
       if (
         target.startsWith("/") ||
         !inside(root, lexical) ||
-        !inside(root, fs.realpathSync(lexical))
+        !inside(root, real!) ||
+        (mounts !== null && mountId(real!) !== rootMount)
       )
-        fail("BACKUP_UNSUPPORTED", "Only resolvable relative in-tree symlinks can be backed up");
+        fail(
+          "BACKUP_UNSUPPORTED",
+          `Only resolvable relative in-tree symlinks on the same mount can be backed up: ${path}`,
+        );
       row.target = target;
     } else if (before.isDirectory()) {
       rows[key] = row;
@@ -192,14 +168,17 @@ export function directoryTree(home: string, root: string, persist = false): Dire
         walk(join(path, name), key ? key + "/" + name : name);
     } else if (before.isFile()) {
       if (before.nlink !== 1 || before.size > 10_000_000)
-        fail("BACKUP_UNSUPPORTED", "Hardlinks or oversized files cannot be faithfully restored");
+        fail(
+          "BACKUP_UNSUPPORTED",
+          `Hardlinks or oversized files cannot be faithfully restored: ${path}`,
+        );
       const data = fs.readFileSync(path);
       bytes += data.length;
       if (bytes > 200_000_000)
-        fail("BACKUP_LIMIT", "Directory backup exceeds 200 MB supported limit");
+        fail("BACKUP_LIMIT", `Directory backup exceeds 200 MB supported limit: ${path}`);
       row.blob = blobHash(data);
       if (persist) putBlob(home, row.blob, data);
-    } else fail("BACKUP_UNSUPPORTED", "Special filesystem entries cannot be restored");
+    } else fail("BACKUP_UNSUPPORTED", `Special filesystem entry cannot be restored: ${path}`);
     rows[key] = row;
     const after = fs.lstatSync(path);
     if (
@@ -209,10 +188,12 @@ export function directoryTree(home: string, root: string, persist = false): Dire
       before.size !== after.size ||
       before.mtimeMs !== after.mtimeMs
     )
-      fail("BACKUP_CHANGED", "Directory changed while being read");
+      fail("BACKUP_CHANGED", `Directory changed while being read: ${path}`);
   }
   walk(root, "");
-  metadata(root, paths);
+  checkMetadata(root, paths);
+  if (mounts !== null && mountTable() !== mounts)
+    fail("BACKUP_CHANGED", `Mount table changed during backup: ${root}`);
   return treeSchema.parse({ exists: true, rows });
 }
 export function libraryHash(ctx: Context): string {
@@ -401,6 +382,7 @@ export function revertLibrary(
   id: string,
   expected: string | undefined,
   dryRun: boolean,
+  quietHost = false,
   afterMove?: () => void,
   afterPlace?: () => void,
 ): unknown {
@@ -429,15 +411,21 @@ export function revertLibrary(
     digest(nextLock(ctx, target, ctx.manifest.destination)) === digest(ctx.lock)
   )
     return { outcome: "CURRENT", snapshot: id, diff: changes };
+  if (!quietHost)
+    fail(
+      "HOST_NOT_QUIET",
+      "Actual directory revert requires --quiet-host after stopping host catalog and other writers; the directory temporarily disappears",
+    );
   const current = createLibrarySnapshot(ctx, "before revert to " + id),
     transaction = randomUUID(),
     p = transactionPaths(ctx, transaction);
   const storage = storageRoot(ctx);
   ensureStorage(ctx, true);
-  if (fs.statSync(storage).dev !== fs.statSync(dirname(ctx.manifest.destination)).dev)
+  if (!sameMount(storage, dirname(ctx.manifest.destination)))
     fail("BACKUP_UNSUPPORTED", "Revert staging must share the destination filesystem");
   fs.mkdirSync(p.root);
   materialize(ctx, target, p.stage);
+  rememberRetained(ctx, transaction, current.id, target.id);
   const next = nextLock(ctx, target, p.stage);
   if (libraryHash(ctx) !== currentHash)
     fail("REVERT_STALE", "Library changed before replacement; current state preserved");
@@ -467,6 +455,7 @@ export function revertLibrary(
   ctx.lock = next;
   save(ctx);
   fs.unlinkSync(join(ctx.home, "library-transaction.json"));
+  finishRetained(ctx, transaction);
   return {
     outcome: "REVERTED",
     snapshot: id,
@@ -480,10 +469,16 @@ export function recoverLibrary(
   dryRun: boolean,
   keepCurrent = false,
   expected?: string,
+  quietHost = false,
 ): unknown {
   const journal = journalSchema.parse(readJson(join(ctx.home, "library-transaction.json")));
   if (journal.collection !== ctx.home || journal.storage !== storageRoot(ctx))
     fail("STATE_INVALID", "Library restore journal ownership differs");
+  if (!dryRun && !quietHost)
+    fail(
+      "HOST_NOT_QUIET",
+      "Actual directory recovery requires --quiet-host after stopping host catalog and other writers",
+    );
   readLibrarySnapshot(ctx, journal.current);
   readLibrarySnapshot(ctx, journal.target);
   const state = digest(ctx.lock);
@@ -500,6 +495,7 @@ export function recoverLibrary(
     if (libraryHash(ctx) !== actual)
       fail("REVERT_STALE", "Directory changed after current-state backup");
     fs.unlinkSync(join(ctx.home, "library-transaction.json"));
+    finishRetained(ctx, journal.transaction);
     return {
       outcome: "RECOVERED",
       action: "keep current directory; ownership drift requires explicit reconciliation",
@@ -512,6 +508,7 @@ export function recoverLibrary(
       ctx.lock = journal.next;
       save(ctx);
       fs.unlinkSync(join(ctx.home, "library-transaction.json"));
+      finishRetained(ctx, journal.transaction);
     }
     return {
       outcome: dryRun ? "WOULD_COMPLETE" : "RECOVERED",
@@ -527,6 +524,7 @@ export function recoverLibrary(
     if (!dryRun) {
       fs.renameSync(p.prior, ctx.manifest.destination);
       fs.unlinkSync(join(ctx.home, "library-transaction.json"));
+      finishRetained(ctx, journal.transaction);
     }
     return {
       outcome: dryRun ? "WOULD_ROLLBACK" : "RECOVERED",
@@ -536,6 +534,7 @@ export function recoverLibrary(
   }
   if (actual === journal.from && !exists(p.prior)) {
     if (!dryRun) fs.unlinkSync(join(ctx.home, "library-transaction.json"));
+    finishRetained(ctx, journal.transaction);
     return {
       outcome: dryRun ? "WOULD_ABORT" : "RECOVERED",
       action: "retain unchanged directory",

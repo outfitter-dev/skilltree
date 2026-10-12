@@ -22,13 +22,13 @@ apply      <id> --hash <hash>           Apply an exact approved candidate
 status | verify | doctor              Read-only state, drift and diagnostics
 backup     [--reason <reason>]         Verify complete directory recovery point
 backups                               List verified directory recovery points
-revert     --snapshot <id> --expect <reviewed-current-hash> [--dry-run]
+revert     --snapshot <id> --expect <reviewed-current-hash> --quiet-host [--dry-run]
 configure  [--adapter grok] [--runtime-root <path>] [--storage <path>]
 migrate-storage                       Relocate report-recognized legacy backups
-compact    --caches | --scratch | --retain-backups <count> [--dry-run]
+compact    --caches | --scratch | --retain-backups <count> | --retained-directories | --backup-scratch [--dry-run]
 archive                               Archive intact accepted Git histories
 restore                               Materialize verified archives; preserve old checkouts
-recover    [--unlock] [--keep-current --expect <hash>]                  Explicit transaction/stale-lock recovery
+recover    [--unlock] [--quiet-host] [--keep-current --expect <hash>]                  Explicit transaction/stale-lock recovery
 probe      <source-id> [--npx <executable>]  Optional pinned skills CLI listing (Node >=22.20)
 
 All state-writing commands accept --dry-run; no authoritative state is changed.
@@ -95,6 +95,9 @@ export function main(args: string[]): number {
         snapshot: { type: "string" },
         expect: { type: "string" },
         "keep-current": { type: "boolean" },
+        "quiet-host": { type: "boolean" },
+        "retained-directories": { type: "boolean" },
+        "backup-scratch": { type: "boolean" },
       },
     });
     if (values.help || positionals.length === 0) {
@@ -155,6 +158,10 @@ export function main(args: string[]): number {
     }
     if (values.storage !== undefined) options.transactionStorage = values.storage;
     if (values["runtime-root"] !== undefined) options.runtimeRoot = values["runtime-root"];
+    if (values["quiet-host"] !== undefined) options.quietHost = values["quiet-host"];
+    if (values["retained-directories"] !== undefined)
+      options.retainedDirectories = values["retained-directories"];
+    if (values["backup-scratch"] !== undefined) options.backupScratch = values["backup-scratch"];
     if (values.caches !== undefined) options.caches = values.caches;
     if (values.scratch !== undefined) options.scratch = values.scratch;
     if (values["retain-backups"] !== undefined)

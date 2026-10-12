@@ -50,7 +50,11 @@ test("every apply verifies the entire library including outside-lock skills and 
         diff: { removed: string[] };
       };
     expect(preview.diff.removed).toContain("helper/SKILL.md");
-    execute(f.home, "revert", [], { snapshot: point.id, expect: preview.expected });
+    execute(f.home, "revert", [], {
+      snapshot: point.id,
+      expect: preview.expected,
+      quietHost: true,
+    });
     expect(fs.readFileSync(join(outside, "notes"), "utf8")).toBe("untracked\n");
     expect(fs.readFileSync(join(outside, "runs.json"), "utf8")).toBe("host history\n");
     expect(fs.statSync(join(outside, "notes")).mode & 0o777).toBe(0o640);
@@ -59,7 +63,7 @@ test("every apply verifies the entire library including outside-lock skills and 
     const back = execute(f.home, "revert", [], { snapshot: current.id, dryRun: true }) as {
       expected: string;
     };
-    execute(f.home, "revert", [], { snapshot: current.id, expect: back.expected });
+    execute(f.home, "revert", [], { snapshot: current.id, expect: back.expected, quietHost: true });
     expect(fs.readFileSync(join(outside, "notes"), "utf8")).toBe("newer outside work\n");
     expect(fs.readFileSync(join(f.dest, "helper/SKILL.md"), "utf8")).toContain(
       "Captured improvement",
@@ -80,7 +84,11 @@ test("stale reviewed revert refuses newer edits without state or destination mut
     const before = authoritative(f.home),
       hash = libraryHash(load(f.home));
     expect(() =>
-      execute(f.home, "revert", [], { snapshot: point.id, expect: preview.expected }),
+      execute(f.home, "revert", [], {
+        snapshot: point.id,
+        expect: preview.expected,
+        quietHost: true,
+      }),
     ).toThrow(expect.objectContaining({ code: "REVERT_STALE" }));
     expect(authoritative(f.home)).toBe(before);
     expect(libraryHash(load(f.home))).toBe(hash);
@@ -153,18 +161,26 @@ test("interrupted directory restoration rolls back safely and repeats recovery",
       before = libraryHash(ctx);
     expect(() =>
       withLock(ctx, () =>
-        revertLibrary(ctx, target.id, before, false, () => {
+        revertLibrary(ctx, target.id, before, false, true, () => {
           throw new Error("interruption");
         }),
       ),
     ).toThrow("interruption");
     expect(libraryPending(ctx)).toBe(true);
     expect(fs.existsSync(f.dest)).toBe(false);
+    expect(execute(f.home, "doctor", [])).toMatchObject({
+      outcome: "ERROR",
+      issues: expect.arrayContaining([
+        expect.stringContaining("Interrupted whole-directory restoration"),
+      ]),
+    });
     expect(() => execute(f.home, "sync", [])).toThrow(
       expect.objectContaining({ code: "RECOVERY_REQUIRED" }),
     );
     expect(recoverLibrary(load(f.home), true)).toMatchObject({ outcome: "WOULD_ROLLBACK" });
-    expect(recoverLibrary(load(f.home), false)).toMatchObject({ outcome: "RECOVERED" });
+    expect(recoverLibrary(load(f.home), false, false, undefined, true)).toMatchObject({
+      outcome: "RECOVERED",
+    });
     expect(libraryHash(load(f.home))).toBe(before);
     expect(fs.readFileSync(join(f.dest, "outside-note"), "utf8")).toBe("current preserved");
     expect(execute(f.home, "recover", [])).toMatchObject({ result: { outcome: "CURRENT" } });
@@ -181,32 +197,34 @@ test("restart completes a placed restore but holds later unknown edits", () => {
     let ctx = load(f.home);
     expect(() =>
       withLock(ctx, () =>
-        revertLibrary(ctx, target.id, libraryHash(ctx), false, undefined, () => {
+        revertLibrary(ctx, target.id, libraryHash(ctx), false, true, undefined, () => {
           throw new Error("placed");
         }),
       ),
     ).toThrow("placed");
-    expect(recoverLibrary(load(f.home), false)).toMatchObject({ outcome: "RECOVERED" });
+    expect(recoverLibrary(load(f.home), false, false, undefined, true)).toMatchObject({
+      outcome: "RECOVERED",
+    });
     expect(libraryHash(load(f.home))).toBe(target.hash);
     expect(
-      execute(f.home, "revert", [], { snapshot: target.id, expect: target.hash }),
+      execute(f.home, "revert", [], { snapshot: target.id, expect: target.hash, quietHost: true }),
     ).toMatchObject({ result: { outcome: "CURRENT" } });
     fs.writeFileSync(join(f.dest, "later"), "second current");
     ctx = load(f.home);
     expect(() =>
       withLock(ctx, () =>
-        revertLibrary(ctx, target.id, libraryHash(ctx), false, undefined, () => {
+        revertLibrary(ctx, target.id, libraryHash(ctx), false, true, undefined, () => {
           fs.writeFileSync(join(f.dest, "newer"), "do not clobber");
         }),
       ),
     ).toThrow(expect.objectContaining({ code: "REVERT_STALE" }));
-    expect(() => recoverLibrary(load(f.home), false)).toThrow(
+    expect(() => recoverLibrary(load(f.home), false, false, undefined, true)).toThrow(
       expect.objectContaining({ code: "DRIFT" }),
     );
     expect(fs.readFileSync(join(f.dest, "newer"), "utf8")).toBe("do not clobber");
     expect(libraryPending(ctx)).toBe(true);
     const keep = recoverLibrary(load(f.home), true, true) as { expected: string };
-    expect(recoverLibrary(load(f.home), false, true, keep.expected)).toMatchObject({
+    expect(recoverLibrary(load(f.home), false, true, keep.expected, true)).toMatchObject({
       outcome: "RECOVERED",
     });
     expect(fs.readFileSync(join(f.dest, "newer"), "utf8")).toBe("do not clobber");
