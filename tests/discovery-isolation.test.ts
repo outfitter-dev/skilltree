@@ -339,3 +339,174 @@ test("current restored baseline omits approval instructions while apply still re
     f.cleanup();
   }
 });
+
+test("unselected holds remain visible without failing current or approval-required staging", () => {
+  const f = fixture();
+  try {
+    install(f.home);
+    fs.mkdirSync(join(f.repo, ".cursor-plugin"));
+    fs.writeFileSync(join(f.repo, ".cursor-plugin/plugin.json"), "{}");
+    commit(f.repo, "unselected unsupported projection");
+    const before = authoritative(f.home);
+    const dry = execute(f.home, "sync", [], { dryRun: true });
+    expect(dry).toMatchObject({
+      outcome: "DRY_RUN",
+      sources: [
+        {
+          outcome: "STAGED",
+          holds: [{ path: ".cursor-plugin/plugin.json", code: "UNSUPPORTED_FORMAT" }],
+        },
+      ],
+      entries: [{ outcome: "CURRENT" }],
+    });
+    expect(authoritative(f.home)).toBe(before);
+    expect(execute(f.home, "sync", [])).toMatchObject({
+      result: { outcome: "STAGED", entries: [{ outcome: "CURRENT" }] },
+    });
+    editBody(f.skill, "Last line", "Changed upstream");
+    commit(f.repo, "new candidate needing approval");
+    const accepted = load(f.home).lock.entries[0]!;
+    expect(execute(f.home, "sync", [])).toMatchObject({
+      result: {
+        outcome: "STAGED",
+        entries: [{ outcome: "HELD", candidate: { revision: git(f.repo, ["rev-parse", "HEAD"]) } }],
+      },
+    });
+    const current = load(f.home).lock.entries[0]!;
+    expect(current.approval).toEqual(accepted.approval);
+    expect(current.deployed).toEqual(accepted.deployed);
+    expect(current.candidate!.hash).not.toBe(current.approval!.hash);
+    const child = Bun.spawnSync(
+      [process.execPath, "src/cli.ts", "sync", "--home", f.home, "--dry-run"],
+      { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+    );
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toMatchObject({
+      outcome: "DRY_RUN",
+      entries: [{ outcome: "HELD", candidate: expect.any(Object) }],
+    });
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const malformed of [false, true]) {
+  test(`absent selectors stay NOT_FOUND while established custom selection holds with ${malformed ? "malformed" : "missing"} manifest`, () => {
+    const f = fixture();
+    try {
+      skill(f.repo, "custom/healthy", "custom");
+      fs.mkdirSync(join(f.repo, ".claude-plugin"));
+      const manifest = join(f.repo, ".claude-plugin/plugin.json");
+      fs.writeFileSync(manifest, JSON.stringify({ skills: ["./custom/healthy"] }));
+      commit(f.repo, "custom skill");
+      execute(f.home, "sync", []);
+      execute(f.home, "select", ["upstream"], {
+        path: "custom/healthy",
+        id: "custom",
+        install: true,
+        reason: "Explicit fixture request",
+      });
+      const accepted = load(f.home).lock.entries[0]!;
+      const deployed = treeHash(readTree(join(f.dest, "custom")));
+      if (malformed) fs.writeFileSync(manifest, "{");
+      else fs.unlinkSync(manifest);
+      commit(f.repo, "manifest unavailable");
+      const before = authoritative(f.home);
+      expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({
+        outcome: "PARTIAL",
+        entries: [{ candidate: null, outcome: "HELD" }],
+      });
+      expect(authoritative(f.home)).toBe(before);
+      expect(execute(f.home, "sync", [])).toMatchObject({
+        result: { outcome: "PARTIAL", entries: [{ candidate: null, outcome: "HELD" }] },
+      });
+      const held = load(f.home).lock.entries[0]!;
+      expect(held).toEqual({
+        ...accepted,
+        candidate: null,
+        outcome: "HELD",
+        reasons: expect.any(Array),
+      });
+      expect(treeHash(readTree(join(f.dest, "custom")))).toBe(deployed);
+      if (malformed) expect(held.reasons[0]).toContain(".claude-plugin/plugin.json");
+      const unchanged = authoritative(f.home);
+      for (const path of ["unrelated/absent", ".agents/skills/absent", "custom/healthy"]) {
+        expect(() =>
+          execute(f.home, "select", ["upstream"], { path, id: "new", dryRun: true }),
+        ).toThrow(
+          expect.objectContaining({ code: path === "custom/healthy" ? "EXISTS" : "NOT_FOUND" }),
+        );
+      }
+      expect(authoritative(f.home)).toBe(unchanged);
+    } finally {
+      f.cleanup();
+    }
+  });
+}
+
+test("overlapping scans deduplicate holds and events while invalid declarations retain safe indices", () => {
+  const f = fixture();
+  try {
+    skill(f.repo, "skills/bad", "bad", "[missing](missing.md)\n");
+    fs.symlinkSync("../outside", join(f.repo, "skills/linked"));
+    fs.mkdirSync(join(f.repo, ".claude-plugin"));
+    fs.writeFileSync(
+      join(f.repo, ".claude-plugin/plugin.json"),
+      JSON.stringify({ skills: ["../private-value", "/private-value", "./skills", "./skills"] }),
+    );
+    const inventory = discover(f.repo);
+    expect(inventory.holds).toHaveLength(4);
+    const declarations = inventory.holds.filter((hold) => hold.code === "INVALID_PLUGIN");
+    expect(declarations.map((hold) => hold.declaration)).toEqual(["skills[0]", "skills[1]"]);
+    expect(JSON.stringify(declarations)).not.toContain("private-value");
+    expect(inventory.holds.filter((hold) => hold.path === "skills/bad")).toHaveLength(1);
+    expect(inventory.holds.filter((hold) => hold.path === "skills/linked")).toHaveLength(1);
+    commit(f.repo, "overlapping plugin scans");
+    execute(f.home, "sync", []);
+    const result = execute(f.home, "inventory", ["upstream"]) as {
+      holds: unknown[];
+      events: unknown[];
+    };
+    expect(result.holds).toHaveLength(4);
+    expect(result.events).toHaveLength(4);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("processed empty observation and unavailable peer report partial while retaining selected history", () => {
+  const f = fixture();
+  try {
+    install(f.home);
+    const other = join(f.root, "other");
+    git(f.root, ["clone", "--no-local", f.repo, other]);
+    execute(f.home, "add", [other], { source: "other", ref: "main" });
+    const accepted = load(f.home).lock;
+    const deployed = treeHash(readTree(join(f.dest, "helper")));
+    fs.renameSync(other, other + "-retained");
+    fs.rmSync(f.skill, { recursive: true });
+    commit(f.repo, "selected skill removed");
+    const before = authoritative(f.home);
+    expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({
+      outcome: "PARTIAL",
+      sources: [{ outcome: "PARTIAL" }, { outcome: "ERROR" }],
+      entries: [{ candidate: null, outcome: "HELD" }],
+    });
+    expect(authoritative(f.home)).toBe(before);
+    expect(execute(f.home, "sync", [])).toMatchObject({
+      result: { outcome: "PARTIAL", sources: [{ outcome: "PARTIAL" }, { outcome: "ERROR" }] },
+    });
+    const current = load(f.home).lock;
+    expect(current.sources[0]!.revision).toBe(git(f.repo, ["rev-parse", "HEAD"]));
+    expect(current.sources[1]).toEqual(accepted.sources[1]);
+    expect(current.entries[0]).toEqual({
+      ...accepted.entries[0]!,
+      candidate: null,
+      outcome: "HELD",
+      reasons: expect.any(Array),
+    });
+    expect(treeHash(readTree(join(f.dest, "helper")))).toBe(deployed);
+  } finally {
+    f.cleanup();
+  }
+});

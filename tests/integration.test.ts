@@ -52,7 +52,13 @@ test("live drift is held; captured local patch survives upstream update", () => 
     const changed = liveHash(target)!;
     editBody(f.skill, "Last line", "Upstream last");
     commit(f.repo, "upstream change");
-    execute(f.home, "sync", []);
+    const beforeSync = authoritative(f.home);
+    expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({
+      outcome: "PARTIAL",
+      entries: [{ outcome: "DRIFT", candidate: null }],
+    });
+    expect(authoritative(f.home)).toBe(beforeSync);
+    expect(execute(f.home, "sync", [])).toMatchObject({ result: { outcome: "PARTIAL" } });
     expect(load(f.home).lock.entries[0]!.outcome).toBe("DRIFT");
     expect(liveHash(target)).toBe(changed);
     expect((execute(f.home, "verify", []) as { outcome: string }).outcome).toBe("DRIFT");
@@ -89,7 +95,13 @@ test("conflicting update leaves deployed bytes and local history intact", () => 
     const local = accepted.local;
     editBody(f.skill, "First line", "Upstream conflict");
     commit(f.repo, "conflict");
-    execute(f.home, "sync", []);
+    const beforeSync = authoritative(f.home);
+    expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({
+      outcome: "PARTIAL",
+      entries: [{ outcome: "CONFLICT", candidate: null }],
+    });
+    expect(authoritative(f.home)).toBe(beforeSync);
+    expect(execute(f.home, "sync", [])).toMatchObject({ result: { outcome: "PARTIAL" } });
     const entry = load(f.home).lock.entries[0]!;
     expect(entry.outcome).toBe("CONFLICT");
     expect(entry.candidate).toBeNull();

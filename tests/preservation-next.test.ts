@@ -70,7 +70,7 @@ test("explicit host metadata survives capture, updates and replacement outside s
     commit(f.repo, "reserved");
     expect(execute(f.home, "sync", [])).toMatchObject({
       result: {
-        outcome: "ERROR",
+        outcome: "PARTIAL",
         sources: [{ holds: [{ path: ".agents/skills/helper", code: "RESERVED_FILE" }] }],
         entries: [{ candidate: null, outcome: "HELD" }],
       },

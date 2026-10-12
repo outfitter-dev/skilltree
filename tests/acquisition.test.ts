@@ -25,7 +25,7 @@ test("invalid upstream skills retain accepted skill histories and corrected sync
     const originalEntry = load(f.home).lock.entries[0]!;
     const dry = execute(f.home, "sync", [], { dryRun: true });
     expect(dry).toMatchObject({
-      outcome: "ERROR",
+      outcome: "PARTIAL",
       dryRun: true,
       sources: [{ holds: [{ code: "UNSUPPORTED_DEPENDENCY", path: ".agents/skills/helper" }] }],
     });
@@ -333,7 +333,7 @@ for (const [name, target] of [
       const before = authoritative(f.home);
       const previous = load(f.home).lock.entries[0]!;
       expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({
-        outcome: "ERROR",
+        outcome: "PARTIAL",
         sources: [{ holds: [{ path: ".agents/skills/helper", code: "UNSAFE_TREE" }] }],
       });
       expect(authoritative(f.home)).toBe(before);

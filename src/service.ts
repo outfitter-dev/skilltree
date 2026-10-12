@@ -266,7 +266,7 @@ function stage(
       outcome: "DRIFT",
       reasons: ["Library differs from accepted baseline; capture local changes before sync"],
     };
-  const hold = selectedHold(discovery, entry.path);
+  const hold = selectedHold(discovery, entry.path, true);
   if (hold)
     return {
       ...entry,
@@ -726,7 +726,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           successful.set(s.id, { source: item, root, entries, discovery });
           results.push({
             id: s.id,
-            outcome: discovery.holds.length ? "PARTIAL" : "STAGED",
+            outcome: entries.some((entry) => !entry.candidate) ? "PARTIAL" : "STAGED",
             holds: discovery.holds,
           });
         } catch (error) {
@@ -757,7 +757,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
             .map((e) => stage(ctx, e, item.source, item.root, false, scratchRoot, item.discovery));
           const result = results.find((r) => r.id === s.id)!;
           result.holds = item.discovery.holds;
-          result.outcome = result.holds.length ? "PARTIAL" : "STAGED";
+          result.outcome = item.entries.some((entry) => !entry.candidate) ? "PARTIAL" : "STAGED";
           return s.checkout && s.revision === item.source.revision
             ? s
             : publishSource(ctx.home, item);
@@ -801,9 +801,8 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
             retireSource(ctx.home, old);
       }
       const failed = results.some((r) => r.outcome !== "STAGED");
-      const usable = [...successful.values()].some((item) => item.discovery.skills.length);
       return {
-        outcome: failed ? (usable ? "PARTIAL" : "ERROR") : dryRun ? "DRY_RUN" : "STAGED",
+        outcome: failed ? (successful.size ? "PARTIAL" : "ERROR") : dryRun ? "DRY_RUN" : "STAGED",
         dryRun,
         sources: results,
         entries,

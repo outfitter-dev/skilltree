@@ -19,6 +19,7 @@ export interface Hold {
   scope: "skill" | "projection";
   code: string;
   message: string;
+  declaration?: string;
 }
 export interface Discovery {
   skills: Skill[];
@@ -76,12 +77,18 @@ export function discover(root: string): Discovery {
   const holds: Hold[] = [];
   const found = new Map<string, Skill>();
   const scanned = new Set<string>();
-  function checked(path: string, scope: Hold["scope"], work: () => void) {
+  function checked(path: string, scope: Hold["scope"], work: () => void, declaration?: string) {
     try {
       work();
     } catch (error) {
       if (!(error instanceof SkilltreeError)) throw error;
-      holds.push({ path, scope, code: error.code, message: error.message });
+      holds.push({
+        path,
+        scope,
+        code: error.code,
+        message: declaration ? `${declaration}: ${error.message}` : error.message,
+        ...(declaration ? { declaration } : {}),
+      });
     }
   }
   for (const path of [
@@ -158,17 +165,22 @@ export function discover(root: string): Discovery {
         if (!(error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
         return fail("INVALID_PLUGIN", "Invalid Claude plugin skill declarations");
       }
-      for (const path of config.skills ?? ["./skills"]) {
-        checked(pluginPath, "projection", () => {
-          if (!path.startsWith("./") || !relativePath.safeParse(path.slice(2)).success)
-            fail(
-              "INVALID_PLUGIN",
-              "Claude skill paths must be safe source-relative paths starting with ./",
-            );
-          const target = resolve(root, path.slice(2));
-          if (!inside(root, target)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
-          scan(target, "claude-plugin");
-        });
+      for (const [index, path] of (config.skills ?? ["./skills"]).entries()) {
+        checked(
+          pluginPath,
+          "projection",
+          () => {
+            if (!path.startsWith("./") || !relativePath.safeParse(path.slice(2)).success)
+              fail(
+                "INVALID_PLUGIN",
+                "Claude skill paths must be safe source-relative paths starting with ./",
+              );
+            const target = resolve(root, path.slice(2));
+            if (!inside(root, target)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
+            scan(target, "claude-plugin");
+          },
+          `skills[${index}]`,
+        );
       }
     });
   }
@@ -182,14 +194,23 @@ export function discover(root: string): Discovery {
   }
   return { skills, holds: holds.sort((a, b) => a.path.localeCompare(b.path)) };
 }
-export function selectedHold(discovery: Discovery, path: string): Hold | undefined {
+export function selectedHold(
+  discovery: Discovery,
+  path: string,
+  acceptedSelection = false,
+): Hold | undefined {
   const direct = discovery.holds.find(
     (hold) => path === hold.path || path.startsWith(hold.path + "/"),
   );
   if (direct) return direct;
+  // Only an established custom selection provides evidence of prior plugin
+  // discovery. An unrelated absent new selector must remain NOT_FOUND.
   if (
+    !acceptedSelection ||
     discovery.skills.some((skill) => skill.path === path) ||
-    [".agents/skills/", ".claude/skills/", "skills/"].some((prefix) => path.startsWith(prefix))
+    [".agents/skills", ".claude/skills", "skills"].some(
+      (root) => path === root || path.startsWith(root + "/"),
+    )
   )
     return undefined;
   return discovery.holds.find((hold) => hold.path === ".claude-plugin/plugin.json");
