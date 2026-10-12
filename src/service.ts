@@ -1,3 +1,4 @@
+import { checkedPython, type PythonIdentity } from "./filesystem-capabilities";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -352,6 +353,14 @@ export function execute(
   if (command === "doctor") {
     const issues: string[] = [];
     const warnings: string[] = [];
+    let metadataInspector: PythonIdentity | { backend: string } | null =
+      process.platform === "linux" ? null : { backend: "macOS xattr/ls" };
+    if (process.platform === "linux")
+      try {
+        metadataInspector = checkedPython();
+      } catch (error) {
+        issues.push(error instanceof Error ? error.message : "Python interpreter unavailable");
+      }
     try {
       execFileSync("git", ["--version"], { stdio: "pipe" });
     } catch {
@@ -451,6 +460,7 @@ export function execute(
       outcome: issues.length ? "ERROR" : "OK",
       issues,
       warnings,
+      metadataInspector,
       adapter: `${ctx.manifest.adapter}; filesystem preservation; catalog pickup unverified`,
       policy: ctx.manifest.policy,
       primary: ctx.manifest.primary,

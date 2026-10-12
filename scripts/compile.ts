@@ -1,3 +1,4 @@
+import { sourceBuildInfo } from "../src/version";
 import { mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -11,6 +12,8 @@ execFileSync(
     "build",
     "src/cli.ts",
     "--compile",
+    "--define",
+    `SKILLTREE_BUILD_INFO:${JSON.stringify(sourceBuildInfo(process.cwd()))}`,
     `--outfile=dist/bin/skilltree-${process.platform}-${process.arch}`,
   ],
   { stdio: "inherit" },

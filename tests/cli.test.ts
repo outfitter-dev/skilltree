@@ -27,3 +27,14 @@ test("invalid command, unknown flags, and missing state fail without executing",
     expect(JSON.parse(result.stderr).outcome).toBeDefined();
   }
 });
+
+test("version identifies the runner without requiring state", async () => {
+  const result = await run(["--version"]);
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toBe("");
+  const info = JSON.parse(result.stdout);
+  expect(info.name).toBe("@outfitter/skilltree");
+  expect(info.version).toBe("0.1.0-rc.0");
+  expect(info.revision).toBeDefined();
+  expect(info.sourceHash).toMatch(/^[a-f0-9]{64}$/);
+});

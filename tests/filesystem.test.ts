@@ -1,3 +1,4 @@
+import { inventory } from "../src/ownership";
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import {
   revertLibrary,
   libraryPending,
 } from "../src/library-backup";
-import { mountId } from "../src/filesystem-capabilities";
+import { mountId, checkedPython } from "../src/filesystem-capabilities";
 import { load, withLock } from "../src/state";
 import { execute } from "../src/service";
 import { compactLibrary } from "../src/library-maintenance";
@@ -51,21 +52,44 @@ test("doctor checks unsupported outside-lock entries and leaves durable state un
 });
 
 test.skipIf(process.platform !== "linux")(
-  "doctor reports missing Python metadata capability without changing state",
+  "missing absolute Python fails capability checks; PATH spoof cannot bypass xattrs",
   () => {
+    expect(() => checkedPython("/nonexistent/skilltree-python3")).toThrow(
+      expect.objectContaining({ code: "BACKUP_CAPABILITY" }),
+    );
     const f = fixture(),
-      path = process.env.PATH;
+      oldPath = process.env.PATH;
     try {
-      const before = authoritative(f.home);
-      const tools = join(f.root, "no-tools");
+      const tools = join(f.root, "fake-tools"),
+        file = join(f.dest, "host-file");
       fs.mkdirSync(tools);
-      process.env.PATH = tools;
-      const result = execute(f.home, "doctor", []) as { outcome: string; issues: string[] };
+      fs.writeFileSync(file, "host");
+      execFileSync(checkedPython().path, [
+        "-I",
+        "-c",
+        "import os,sys;os.setxattr(sys.argv[1],'user.skilltree-test',b'x')",
+        file,
+      ]);
+      fs.writeFileSync(join(tools, "python3"), "#!/bin/sh\nprintf '%s\\n' '{\"ok\":true}'\n", {
+        mode: 0o755,
+      });
+      process.env.PATH = tools + ":" + oldPath;
+      const before = authoritative(f.home),
+        result = execute(f.home, "doctor", []) as {
+          outcome: string;
+          issues: string[];
+          metadataInspector: { path: string; sha256: string };
+        };
       expect(result.outcome).toBe("ERROR");
-      expect(result.issues.join("\n")).toContain("Python 3");
+      expect(result.issues.join("\n")).toContain(file);
+      expect(result.metadataInspector.path).toBe(fs.realpathSync("/usr/bin/python3"));
+      expect(result.metadataInspector.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(() => directoryTree(f.home, f.dest)).toThrow(
+        expect.objectContaining({ code: "BACKUP_UNSUPPORTED" }),
+      );
       expect(authoritative(f.home)).toBe(before);
     } finally {
-      process.env.PATH = path;
+      process.env.PATH = oldPath;
       f.cleanup();
     }
   },
@@ -78,7 +102,7 @@ test.skipIf(process.platform !== "linux")(
     try {
       const file = join(f.dest, "host-file");
       fs.writeFileSync(file, "host");
-      execFileSync("python3", [
+      execFileSync(checkedPython().path, [
         "-I",
         "-c",
         "import os,sys;os.setxattr(sys.argv[1],'user.skilltree-test',b'x')",
@@ -87,14 +111,14 @@ test.skipIf(process.platform !== "linux")(
       expect(() => directoryTree(f.home, f.dest)).toThrow(
         expect.objectContaining({ code: "BACKUP_UNSUPPORTED" }),
       );
-      execFileSync("python3", [
+      execFileSync(checkedPython().path, [
         "-I",
         "-c",
         "import os,sys;os.removexattr(sys.argv[1],'user.skilltree-test')",
         file,
       ]);
       // Linux ACL xattr v2: USER_OBJ, named USER, GROUP_OBJ, MASK, OTHER.
-      execFileSync("python3", [
+      execFileSync(checkedPython().path, [
         "-I",
         "-c",
         "import os,sys,struct;v=struct.pack('<I',2)+b''.join(struct.pack('<HHI',*x) for x in [(1,6,0xffffffff),(2,4,12345),(4,4,0xffffffff),(16,4,0xffffffff),(32,4,0xffffffff)]);os.setxattr(sys.argv[1],'system.posix_acl_access',v)",
@@ -103,7 +127,7 @@ test.skipIf(process.platform !== "linux")(
       expect(() => directoryTree(f.home, f.dest)).toThrow(
         expect.objectContaining({ code: "BACKUP_UNSUPPORTED" }),
       );
-      execFileSync("python3", [
+      execFileSync(checkedPython().path, [
         "-I",
         "-c",
         "import os,sys;os.removexattr(sys.argv[1],'system.posix_acl_access')",
@@ -253,7 +277,7 @@ test.skipIf(process.env.SKILLTREE_OVERLAY_FIXTURE !== "1")(
       execFileSync("mount", ["--bind", source, target]);
       bound = true;
       expect(() => directoryTree(f.home, f.dest)).toThrow(
-        expect.objectContaining({ code: "BACKUP_UNSUPPORTED" }),
+        expect.objectContaining({ code: "BACKUP_MOUNT" }),
       );
     } finally {
       if (bound) execFileSync("umount", [join(f.dest, "bind-target")]);
@@ -299,3 +323,138 @@ test("a host-recreated directory during the rename gap holds without losing eith
     f.cleanup();
   }
 });
+
+test("pre-write durable intent cleans empty and partial prefixes after real process death", () => {
+  const f = fixture();
+  try {
+    for (const amount of [0, 3, 8]) {
+      const payload = "payload" + amount,
+        key = createHash("sha256").update(payload).digest("hex");
+      const killed = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          `import * as fs from "node:fs";import {putBlob} from "./src/library-backup.ts";const data=Buffer.from(process.env.SKILLTREE_TEST_DATA!);putBlob(process.env.SKILLTREE_TEST_HOME!,process.env.SKILLTREE_TEST_HASH!,data,(path)=>{if(Number(process.env.SKILLTREE_TEST_AMOUNT))fs.writeFileSync(path,data.subarray(0,Number(process.env.SKILLTREE_TEST_AMOUNT)));process.kill(process.pid,"SIGKILL");});`,
+        ],
+        {
+          env: {
+            ...process.env,
+            SKILLTREE_TEST_HOME: f.home,
+            SKILLTREE_TEST_DATA: payload,
+            SKILLTREE_TEST_HASH: key,
+            SKILLTREE_TEST_AMOUNT: String(amount),
+          },
+        },
+      );
+      expect(killed.signal).toBe("SIGKILL");
+      const before = authoritative(f.home),
+        preview = compactLibrary(load(f.home), { backupScratch: true, dryRun: true });
+      expect(preview.candidates).toHaveLength(1);
+      expect(preview.held).toHaveLength(0);
+      expect(authoritative(f.home)).toBe(before);
+      expect(compactLibrary(load(f.home), { backupScratch: true }).held).toHaveLength(0);
+      expect(
+        fs.readdirSync(join(f.home, "library-blobs")).filter((n) => n.endsWith(".tmp")),
+      ).toHaveLength(0);
+      expect(fs.readdirSync(join(f.home, "library-temp-records"))).toHaveLength(0);
+    }
+    const unknown = join(
+      f.home,
+      "library-blobs",
+      `${createHash("sha256").update("unknown").digest("hex")}.bin.${randomUUID()}.tmp`,
+    );
+    fs.writeFileSync(unknown, "unknown data", { mode: 0o600 });
+    expect(compactLibrary(load(f.home), { backupScratch: true }).held[0]?.reason).toContain(
+      "No complete ownership intent",
+    );
+    expect(fs.readFileSync(unknown, "utf8")).toBe("unknown data");
+    const record = join(f.home, "library-temp-records", "orphan.json.old.tmp");
+    fs.writeFileSync(record, "unknown partial record");
+    expect(
+      compactLibrary(load(f.home), { backupScratch: true }).held.some(
+        (h) => h.root === record && h.reason.includes("retained for inspection"),
+      ),
+    ).toBe(true);
+    expect(fs.readFileSync(record, "utf8")).toBe("unknown partial record");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("recover dry-run abort leaves the entire durable state and unfinished receipt unchanged", () => {
+  const f = fixture();
+  try {
+    install(f.home);
+    const ctx = load(f.home),
+      target = createLibrarySnapshot(ctx, "target");
+    fs.writeFileSync(join(f.dest, "later"), "keep current");
+    expect(() =>
+      withLock(ctx, () =>
+        revertLibrary(ctx, target.id, libraryHash(ctx), false, true, undefined, undefined, () => {
+          throw new Error("intent interruption");
+        }),
+      ),
+    ).toThrow("intent interruption");
+    const before = createHash("sha256").update(authoritative(f.home)).digest("hex"),
+      files = inventory(f.home);
+    const markers = fs.readdirSync(join(f.home, "library-retained"));
+    expect(markers).toHaveLength(1);
+    expect(
+      JSON.parse(fs.readFileSync(join(f.home, "library-retained", markers[0]!), "utf8")).finished,
+    ).toBe(false);
+    expect(execute(f.home, "recover", [], { dryRun: true })).toMatchObject({
+      outcome: "WOULD_ABORT",
+    });
+    expect(createHash("sha256").update(authoritative(f.home)).digest("hex")).toBe(before);
+    expect(inventory(f.home)).toEqual(files);
+    expect(
+      JSON.parse(fs.readFileSync(join(f.home, "library-retained", markers[0]!), "utf8")).finished,
+    ).toBe(false);
+    expect(execute(f.home, "recover", [], { quietHost: true })).toMatchObject({
+      result: { outcome: "RECOVERED" },
+    });
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("backup reports distinct permission, hardlink and size-limit causes", () => {
+  const f = fixture();
+  try {
+    const file = join(f.dest, "unsupported");
+    fs.writeFileSync(file, "x");
+    fs.chmodSync(file, 0o4755);
+    expect(() => directoryTree(f.home, f.dest)).toThrow(
+      expect.objectContaining({ code: "BACKUP_PERMISSIONS" }),
+    );
+    fs.chmodSync(file, 0o644);
+    fs.linkSync(file, join(f.dest, "hardlink"));
+    expect(() => directoryTree(f.home, f.dest)).toThrow(
+      expect.objectContaining({ code: "BACKUP_HARDLINK" }),
+    );
+    fs.unlinkSync(join(f.dest, "hardlink"));
+    fs.truncateSync(file, 10000001);
+    expect(() => directoryTree(f.home, f.dest)).toThrow(
+      expect.objectContaining({ code: "BACKUP_LIMIT" }),
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)(
+  "backup reports foreign owner distinctly on an isolated root fixture",
+  () => {
+    const f = fixture();
+    try {
+      const file = join(f.dest, "foreign");
+      fs.writeFileSync(file, "x");
+      fs.chownSync(file, 12345, 12345);
+      expect(() => directoryTree(f.home, f.dest)).toThrow(
+        expect.objectContaining({ code: "BACKUP_OWNER" }),
+      );
+    } finally {
+      f.cleanup();
+    }
+  },
+);

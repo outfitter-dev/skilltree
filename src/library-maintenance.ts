@@ -7,6 +7,7 @@ import { atomicJson, readJson, exists, assertNoSymlinks } from "./files";
 import { type Context } from "./state";
 import { storageRoot } from "./deployment";
 import { directoryTree, readLibrarySnapshot, treeDigest, libraryPending } from "./library-backup";
+import { checkMetadata } from "./filesystem-capabilities";
 import { inventory, removeOwned } from "./ownership";
 
 const retainedSchema = z
@@ -23,7 +24,7 @@ const retainedSchema = z
   .strict();
 const tempSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     collection: z.string(),
     path: z.string(),
     hash,
@@ -31,6 +32,7 @@ const tempSchema = z
     ino: z.number(),
     dev: z.number(),
     size: z.number().int().nonnegative(),
+    data: z.string().optional(),
   })
   .strict();
 function exited(pid: number): boolean {
@@ -72,18 +74,52 @@ export function finishRetained(ctx: Context, transaction: string): void {
     fail("OWNERSHIP_HELD", "Retained directory ownership differs");
   atomicJson(path, { ...record, finished: true });
 }
-export function rememberBlobTemp(home: string, path: string, key: string): void {
-  const stat = fs.lstatSync(path);
-  atomicJson(join(home, "library-temp-records", path.slice(path.lastIndexOf("/") + 1) + ".json"), {
-    version: 1,
-    collection: home,
-    path,
-    hash: key,
-    pid: process.pid,
-    ino: stat.ino,
-    dev: stat.dev,
-    size: stat.size,
-  });
+export function rememberBlobTemp(
+  home: string,
+  path: string,
+  key: string,
+  intended: Buffer = fs.readFileSync(path),
+): void {
+  const stat = fs.lstatSync(path),
+    records = join(home, "library-temp-records");
+  if (createHash("sha256").update(intended).digest("hex") !== key)
+    fail("STATE_INVALID", "Temp intent payload does not match its blob identity");
+  fs.mkdirSync(records, { recursive: true, mode: 0o700 });
+  const parent = fs.openSync(home, "r");
+  try {
+    fs.fsyncSync(parent);
+  } finally {
+    fs.closeSync(parent);
+  }
+  const marker = assertNoSymlinks(join(records, path.slice(path.lastIndexOf("/") + 1) + ".json"));
+  const fd = fs.openSync(marker, "wx", 0o600);
+  try {
+    fs.writeFileSync(
+      fd,
+      JSON.stringify({
+        version: 2,
+        collection: home,
+        path,
+        hash: key,
+        pid: process.pid,
+        ino: stat.ino,
+        dev: stat.dev,
+        size: intended.length,
+        data: intended.toString("base64"),
+      }) + "\n",
+    );
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // A complete durable intent must exist before the payload is written. Avoid
+  // atomicJson receipt temps, which themselves lacked crash ownership evidence.
+  const dir = fs.openSync(records, "r");
+  try {
+    fs.fsyncSync(dir);
+  } finally {
+    fs.closeSync(dir);
+  }
 }
 export function forgetBlobTemp(home: string, path: string): void {
   const marker = join(
@@ -157,40 +193,119 @@ export function compactLibrary(
   }
   if (options.backupScratch) {
     const root = join(ctx.home, "library-blobs"),
-      records = join(ctx.home, "library-temp-records");
-    if (exists(root))
-      for (const name of fs.readdirSync(root).filter((n) => n.endsWith(".tmp"))) {
-        const path = assertNoSymlinks(join(root, name));
+      records = join(ctx.home, "library-temp-records"),
+      seen = new Set<string>();
+    const clean = (name: string) => {
+      const path = assertNoSymlinks(join(root, name)),
+        marker = join(records, name + ".json");
+      seen.add(name + ".json");
+      try {
+        if (!/^[a-f0-9]{64}\.bin\.[a-f0-9-]{36}\.tmp$/.test(name))
+          fail("OWNERSHIP_HELD", "Unknown blob temporary file retained");
+        if (!exists(marker))
+          fail(
+            "OWNERSHIP_HELD",
+            "No complete ownership intent; temporary blob retained for inspection",
+          );
+        const markerStat = fs.lstatSync(assertNoSymlinks(marker));
+        if (
+          !markerStat.isFile() ||
+          markerStat.nlink !== 1 ||
+          markerStat.uid !== process.getuid?.() ||
+          markerStat.gid !== process.getgid?.() ||
+          (markerStat.mode & 0o777) !== 0o600 ||
+          markerStat.size > 14000000
+        )
+          fail(
+            "OWNERSHIP_HELD",
+            "Temporary intent identity or permissions are unsupported; retained",
+          );
+        let record: z.infer<typeof tempSchema>;
         try {
-          if (!/^[a-f0-9]{64}\.bin\.[a-f0-9-]{36}\.tmp$/.test(name))
-            fail("OWNERSHIP_HELD", "Unknown blob temporary file retained");
-          const marker = join(records, name + ".json"),
-            record = tempSchema.parse(readJson(marker)),
-            stat = fs.lstatSync(path);
+          record = tempSchema.parse(readJson(marker));
+        } catch {
+          fail(
+            "OWNERSHIP_HELD",
+            "Incomplete or invalid temporary ownership intent retained for inspection",
+          );
+        }
+        if (
+          record!.hash !== name.slice(0, 64) ||
+          record!.collection !== ctx.home ||
+          record!.path !== path ||
+          dirname(record!.path) !== root ||
+          !exited(record!.pid)
+        )
+          fail("OWNERSHIP_HELD", "Temporary intent belongs to a live or unrecognized owner");
+        let expected: Buffer | null = null;
+        if (record!.version === 2) {
+          if (record!.data === undefined)
+            fail("OWNERSHIP_HELD", "Incomplete intended payload retained");
+          expected = Buffer.from(record!.data!, "base64");
           if (
-            record.collection !== ctx.home ||
-            record.path !== path ||
-            dirname(record.path) !== root ||
-            !exited(record.pid) ||
+            expected.toString("base64") !== record!.data ||
+            expected.length !== record!.size ||
+            createHash("sha256").update(expected).digest("hex") !== record!.hash
+          )
+            fail("OWNERSHIP_HELD", "Corrupt intended payload retained");
+        } else if (record!.data !== undefined)
+          fail("OWNERSHIP_HELD", "Unrecognized legacy intent retained");
+        if (exists(path)) {
+          const stat = fs.lstatSync(path);
+          if (
             !stat.isFile() ||
             stat.nlink !== 1 ||
             stat.uid !== process.getuid?.() ||
             stat.gid !== process.getgid?.() ||
-            (stat.mode & 0o777) ^ 0o600 ||
-            stat.ino !== record.ino ||
-            stat.dev !== record.dev ||
-            stat.size !== record.size ||
-            createHash("sha256").update(fs.readFileSync(path)).digest("hex") !== record.hash
+            (stat.mode & 0o777) !== 0o600 ||
+            stat.ino !== record!.ino ||
+            stat.dev !== record!.dev
           )
-            fail("OWNERSHIP_HELD", "Changed, partial or live-owner blob temp retained");
+            fail("OWNERSHIP_HELD", "Temporary blob identity or permissions changed; retained");
+          if (stat.size > record!.size)
+            fail("OWNERSHIP_HELD", "Temporary size exceeds intended payload; retained");
+          const actual = fs.readFileSync(path);
+          if (
+            expected
+              ? actual.length > expected.length ||
+                !actual.equals(expected.subarray(0, actual.length))
+              : stat.size !== record!.size ||
+                createHash("sha256").update(actual).digest("hex") !== record!.hash
+          )
+            fail("OWNERSHIP_HELD", "Temporary bytes differ from the recorded payload; retained");
+          checkMetadata(path, [path]);
           candidates.push({ root: path, kind: "verified-blob-temp", files: 1 });
-          if (!options.dryRun) {
-            fs.unlinkSync(path);
-            fs.unlinkSync(marker);
-          }
-        } catch (error) {
-          hold(path, error);
+          if (!options.dryRun) fs.unlinkSync(path);
+        } else {
+          const published = assertNoSymlinks(join(root, record!.hash + ".bin"));
+          if (
+            !exists(published) ||
+            !fs.lstatSync(published).isFile() ||
+            fs.lstatSync(published).size !== record!.size ||
+            createHash("sha256").update(fs.readFileSync(published)).digest("hex") !== record!.hash
+          )
+            fail(
+              "OWNERSHIP_HELD",
+              "Temp absent without a verified published blob; intent retained",
+            );
+          candidates.push({ root: marker, kind: "completed-blob-intent", files: 1 });
         }
+        if (!options.dryRun) fs.unlinkSync(marker);
+      } catch (error) {
+        hold(path, error);
+      }
+    };
+    if (exists(root))
+      for (const name of fs.readdirSync(root).filter((n) => n.endsWith(".tmp"))) clean(name);
+    if (exists(records))
+      for (const name of fs.readdirSync(records)) {
+        if (seen.has(name)) continue;
+        if (/^[a-f0-9]{64}\.bin\.[a-f0-9-]{36}\.tmp\.json$/.test(name)) clean(name.slice(0, -5));
+        else
+          hold(
+            join(records, name),
+            new Error("Legacy or incomplete ownership-record artifact retained for inspection"),
+          );
       }
   }
   return { candidates, held };

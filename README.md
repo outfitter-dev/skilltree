@@ -208,3 +208,13 @@ skilltree compact --home /absolute/state --backup-scratch
 These separate opt-in policies clean verified receipt-owned stage/prior copies and complete checkpointed temporary blobs with exited owners. They preserve every whole-directory recovery point and blob. Unowned legacy copies, newer notes, corrupt/partial temps and live-owner material hold. No automatic cleanup runs.
 
 The default Linux lock path uses the OS account's passwd home, independent of `$HOME`; fixture/custom placement requires `--runtime-root`. Runner upgrades use a new approved content-specific installer prefix and the exact artifact SHA256; verify it before selecting its launcher. Old prefixes/receipts remain intact. Runner restore does not restore Python or other OS dependencies.
+
+### Runner identity and final recovery diagnostics
+
+`skilltree --version` needs no state and reports package version, Git revision/dirty status and a SHA256 of runtime source/dependency inputs. Portable and native builds embed this identity at build time; exported source without Git still has its source hash. Verify the approved revision/hash when selecting a new immutable runner prefix. This identity is not a safety guarantee.
+
+Linux metadata inspection resolves the system `/usr/bin/python3` to an absolute regular interpreter, requires root ownership without group/world write permission, and pins its identity during the process. PATH cannot select an alternate inspector. Doctor reports its path, version and binary SHA256; a missing or changed interpreter holds. OS dependency trust/provision remains separate from runner restoration.
+
+Before writing a temporary payload, Skilltree fsyncs a versioned ownership intent containing the expected payload, inode and writer identity. Explicit backup-scratch cleanup can verify empty or interrupted prefixes against that intent after the writer exits. Different bytes, incomplete intents and unowned artifacts remain held with inspection reasons. Newly written intents use exclusive final filenames, avoiding unowned atomic-record temp files. The temporary intent duplicates at most one bounded payload per in-flight blob; complete recovery points remain retained. This does not promise arbitrary power-loss durability.
+
+Backup cause codes distinguish `BACKUP_LIMIT`, `BACKUP_MOUNT`, `BACKUP_PERMISSIONS`, `BACKUP_OWNER` and `BACKUP_HARDLINK`; messages identify the path. Unsupported links/metadata retain their existing unsupported category. Recovery previews never finalize receipts or mutate durable state.

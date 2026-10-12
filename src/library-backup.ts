@@ -91,7 +91,12 @@ function getBlob(home: string, key: string): Buffer {
   if (blobHash(bytes) !== key) fail("BACKUP_CORRUPT", "Directory blob integrity mismatch");
   return bytes;
 }
-function putBlob(home: string, key: string, bytes: Buffer): void {
+export function putBlob(
+  home: string,
+  key: string,
+  bytes: Buffer,
+  afterIntent?: (temp: string) => void,
+): void {
   const path = blobPath(home, key);
   if (exists(path)) {
     getBlob(home, key);
@@ -101,9 +106,10 @@ function putBlob(home: string, key: string, bytes: Buffer): void {
   const temp = path + "." + randomUUID() + ".tmp";
   const fd = fs.openSync(temp, "wx", 0o600);
   try {
+    rememberBlobTemp(home, temp, key, bytes);
+    afterIntent?.(temp);
     fs.writeFileSync(fd, bytes);
     fs.fsyncSync(fd);
-    rememberBlobTemp(home, temp, key);
   } finally {
     fs.closeSync(fd);
   }
@@ -125,17 +131,13 @@ export function directoryTree(home: string, root: string, persist = false): Dire
     const before = fs.lstatSync(path);
     paths.push(path);
     count++;
-    if (
-      count > 25000 ||
-      (mounts ? mountId(path) !== rootMount : before.dev !== device) ||
-      before.mode & 0o7000 ||
-      before.uid !== process.getuid?.() ||
-      before.gid !== process.getgid?.()
-    )
-      fail(
-        "BACKUP_UNSUPPORTED",
-        `Entry count, mount, special permissions or ownership exceeds supported recovery limits: ${path}`,
-      );
+    if (count > 25000) fail("BACKUP_LIMIT", `Entry count exceeds 25,000: ${path}`);
+    if (mounts ? mountId(path) !== rootMount : before.dev !== device)
+      fail("BACKUP_MOUNT", `Nested or different filesystem mount: ${path}`);
+    if (before.mode & 0o7000)
+      fail("BACKUP_PERMISSIONS", `Special permission bits cannot be restored: ${path}`);
+    if (before.uid !== process.getuid?.() || before.gid !== process.getgid?.())
+      fail("BACKUP_OWNER", `Entry owner/group differs from this operator: ${path}`);
     const row: Row = {
       kind: before.isSymbolicLink() ? "link" : before.isDirectory() ? "directory" : "file",
       mode: before.mode & 0o777,
@@ -167,11 +169,9 @@ export function directoryTree(home: string, root: string, persist = false): Dire
       for (const name of fs.readdirSync(path).sort())
         walk(join(path, name), key ? key + "/" + name : name);
     } else if (before.isFile()) {
-      if (before.nlink !== 1 || before.size > 10_000_000)
-        fail(
-          "BACKUP_UNSUPPORTED",
-          `Hardlinks or oversized files cannot be faithfully restored: ${path}`,
-        );
+      if (before.nlink !== 1)
+        fail("BACKUP_HARDLINK", `Hardlinked file cannot be faithfully restored: ${path}`);
+      if (before.size > 10_000_000) fail("BACKUP_LIMIT", `File size exceeds 10 MB: ${path}`);
       const data = fs.readFileSync(path);
       bytes += data.length;
       if (bytes > 200_000_000)
@@ -385,6 +385,7 @@ export function revertLibrary(
   quietHost = false,
   afterMove?: () => void,
   afterPlace?: () => void,
+  afterIntent?: () => void,
 ): unknown {
   const target = readLibrarySnapshot(ctx, id),
     currentTree = directoryTree(ctx.home, ctx.manifest.destination),
@@ -442,6 +443,7 @@ export function revertLibrary(
     next,
   };
   atomicJson(join(ctx.home, "library-transaction.json"), journal);
+  afterIntent?.();
   if (libraryHash(ctx) !== currentHash)
     fail("REVERT_STALE", "Library changed during restore intent; recover before proceeding");
   if (currentTree.exists) fs.renameSync(ctx.manifest.destination, p.prior);
@@ -533,8 +535,10 @@ export function recoverLibrary(
     };
   }
   if (actual === journal.from && !exists(p.prior)) {
-    if (!dryRun) fs.unlinkSync(join(ctx.home, "library-transaction.json"));
-    finishRetained(ctx, journal.transaction);
+    if (!dryRun) {
+      fs.unlinkSync(join(ctx.home, "library-transaction.json"));
+      finishRetained(ctx, journal.transaction);
+    }
     return {
       outcome: dryRun ? "WOULD_ABORT" : "RECOVERED",
       action: "retain unchanged directory",

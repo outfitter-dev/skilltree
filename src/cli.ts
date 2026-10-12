@@ -1,3 +1,4 @@
+import { buildInfo } from "./version";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { execute, type Options } from "./service";
@@ -6,6 +7,7 @@ import { SkilltreeError } from "./model";
 const HELP = `Skilltree — first release candidate
 
 Usage: skilltree <command> --home <durable-state> [options]
+       skilltree --version
 
 init       --dest <shared-library> --exclusive-dest [--gardener <profile>] [--primary <profile>] [--lock-backend mkdir|flock]
            [--adapter filesystem|grok] [--storage <path>] [--runtime-root <path>]
@@ -68,6 +70,7 @@ export function main(args: string[]): number {
       strict: true,
       options: {
         help: { type: "boolean", short: "h" },
+        version: { type: "boolean", short: "v" },
         home: { type: "string" },
         dest: { type: "string" },
         source: { type: "string" },
@@ -100,6 +103,10 @@ export function main(args: string[]): number {
         "backup-scratch": { type: "boolean" },
       },
     });
+    if (values.version) {
+      console.log(JSON.stringify(buildInfo()));
+      return 0;
+    }
     if (values.help || positionals.length === 0) {
       console.log(HELP);
       return 0;
