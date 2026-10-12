@@ -75,6 +75,7 @@ export function discover(root: string): Discovery {
   assertNoSymlinks(root);
   const holds: Hold[] = [];
   const found = new Map<string, Skill>();
+  const scanned = new Set<string>();
   function checked(path: string, scope: Hold["scope"], work: () => void) {
     try {
       work();
@@ -99,6 +100,10 @@ export function discover(root: string): Discovery {
   }
   function scan(dir: string, format: string) {
     const path = relative(root, dir);
+    // Conventional roots and Claude plugin paths can name the same tree.
+    // Repeating the walk would record failed skills and symlink holds twice.
+    if (scanned.has(path)) return;
+    scanned.add(path);
     checked(path, "projection", () => {
       if (!inside(root, dir)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
       assertNoSymlinks(dir);

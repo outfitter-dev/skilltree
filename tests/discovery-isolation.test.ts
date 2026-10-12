@@ -191,6 +191,48 @@ test("plugin traversal holds its declaration and healthy declarations remain usa
   }
 });
 
+test("plugin rescan does not duplicate failed-skill or symlink holds", () => {
+  const f = fixture();
+  try {
+    const broken = skill(f.repo, "skills/broken", "broken");
+    fs.writeFileSync(join(broken, "AGENTS.md"), "[guide](references/absent.md)\n");
+    fs.symlinkSync("../../outside", join(f.repo, "skills/linked"));
+    skill(f.repo, "skills/healthy", "healthy");
+    skill(f.repo, "custom/extra", "extra");
+    fs.mkdirSync(join(f.repo, ".claude-plugin"));
+    const manifest = join(f.repo, ".claude-plugin/plugin.json");
+    fs.writeFileSync(manifest, "{}\n");
+    const omitted = discover(f.repo);
+    expect(omitted.skills.map((item) => item.path)).toEqual([
+      ".agents/skills/helper",
+      "skills/healthy",
+    ]);
+    expect(omitted.skills.find((item) => item.path === "skills/healthy")?.format).toBe("plain");
+    expect(omitted.holds.filter((hold) => hold.path === "skills/broken")).toEqual([
+      expect.objectContaining({ scope: "skill", code: "MISSING_REFERENCE" }),
+    ]);
+    expect(omitted.holds.filter((hold) => hold.path === "skills/linked")).toEqual([
+      expect.objectContaining({
+        scope: "projection",
+        code: "UNSAFE_TREE",
+        message: "Symlink in skill discovery tree",
+      }),
+    ]);
+    fs.writeFileSync(
+      manifest,
+      JSON.stringify({ skills: ["./skills", "./skills", "./custom/extra"] }),
+    );
+    const declared = discover(f.repo);
+    expect(declared.holds.filter((hold) => hold.path === "skills/broken")).toHaveLength(1);
+    expect(declared.holds.filter((hold) => hold.path === "skills/linked")).toHaveLength(1);
+    expect(declared.skills.find((item) => item.path === "custom/extra")?.format).toBe(
+      "claude-plugin",
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("supported large files validate in V8 and actual size limits identify only the affected skill", async () => {
   const f = fixture();
   try {
