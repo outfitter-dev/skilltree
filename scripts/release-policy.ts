@@ -113,3 +113,70 @@ export function hasChangelogHeading(text: string, version: string): boolean {
     return parts[0] === "##" && parts[1] === version;
   });
 }
+
+export interface BoundaryPull {
+  merged_at: string | null;
+  base: { ref: string; repo: { full_name: string } };
+  labels: { name: string }[];
+}
+export function allChangesetsAtBoundary(groups: BoundaryPull[][]): boolean {
+  return (
+    groups.length > 0 &&
+    groups.every(
+      (pulls) =>
+        pulls.length > 0 &&
+        pulls.every(
+          (p) =>
+            !!p.merged_at &&
+            p.base.ref === "main" &&
+            p.base.repo.full_name === releaseRepository &&
+            p.labels.some((l) => l.name === "stack:boundary") &&
+            p.labels
+              .filter((l) => l.name.startsWith("stack:"))
+              .every((l) => l.name === "stack:boundary"),
+        ),
+    )
+  );
+}
+export function hasInstallHook(scripts: Record<string, unknown> | undefined): boolean {
+  return ["preinstall", "install", "postinstall"].some(
+    (name) => scripts && Object.hasOwn(scripts, name),
+  );
+}
+export function packageFacing(paths: string[]): boolean {
+  return paths.some(
+    (p) =>
+      /^(src\/|bin\/|docs\/|skills\/|agents\/)/.test(p) ||
+      [
+        "package.json",
+        "bun.lock",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md",
+        "scripts/build.ts",
+      ].includes(p),
+  );
+}
+export function generatedVersionPr(event: unknown): boolean {
+  const p = (
+    event as {
+      pull_request?: {
+        title?: string;
+        user?: { login?: string };
+        head?: { ref?: string; repo?: { full_name?: string } };
+        base?: { ref?: string; repo?: { full_name?: string } };
+      };
+    } | null
+  )?.pull_request;
+  return (
+    !!p &&
+    p.title === "chore(release): version packages" &&
+    p.user?.login === "github-actions[bot]" &&
+    p.head?.ref === "changeset-release/main" &&
+    p.head.repo?.full_name === releaseRepository &&
+    p.base?.ref === "main" &&
+    p.base.repo?.full_name === releaseRepository
+  );
+}
+export const releaseCiWaitAttempts = 120;
+export const releaseCiPollMs = 10000;

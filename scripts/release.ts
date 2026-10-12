@@ -9,6 +9,11 @@ import {
   releaseRepository,
   workflowPassed,
   hasChangelogHeading,
+  allChangesetsAtBoundary,
+  hasInstallHook,
+  releaseCiWaitAttempts,
+  releaseCiPollMs,
+  type BoundaryPull,
   type ExpectedCheck,
   type WorkflowEvidence,
   type Evidence,
@@ -76,7 +81,7 @@ function identity() {
     pkg.repository?.url !== "git+https://github.com/outfitter-dev/skilltree.git" ||
     pkg.dependencies ||
     pkg.scripts?.prepublishOnly !== "node scripts/publish-guard.mjs" ||
-    pkg.scripts?.postinstall ||
+    hasInstallHook(pkg.scripts) ||
     pkg.files.includes("dist/bin/")
   )
     throw new Error("Unexpected public package contract");
@@ -169,21 +174,11 @@ async function labels() {
   const pending = fs
     .readdirSync(".changeset")
     .filter((p) => p.endsWith(".md") && p !== "README.md");
-  const sourcePrs = pending.flatMap((path) => {
+  const sourcePrs = pending.map((path) => {
     const sha = git("log", "-n", "1", "--diff-filter=A", "--format=%H", "--", ".changeset/" + path);
     return sha ? gh("repos/" + releaseRepository + "/commits/" + sha + "/pulls") : [];
-  }) as { labels: { name: string }[] }[];
-  const auto =
-    !proposed.includes("-") &&
-    pending.length > 0 &&
-    sourcePrs.length > 0 &&
-    sourcePrs.every(
-      (p) =>
-        p.labels.some((l) => l.name === "stack:boundary") &&
-        p.labels
-          .filter((l) => l.name.startsWith("stack:"))
-          .every((l) => l.name === "stack:boundary"),
-    );
+  }) as BoundaryPull[][];
+  const auto = !proposed.includes("-") && allChangesetsAtBoundary(sourcePrs);
   const old = identity().version as string;
   const delta =
     old.split(".")[0] !== proposed.split(".")[0]
@@ -260,7 +255,7 @@ async function policy() {
       p.title === "chore(release): version packages",
   );
   let passed = false;
-  for (let attempt = 0; attempt < 30; attempt++) {
+  for (let attempt = 0; attempt < releaseCiWaitAttempts; attempt++) {
     passed =
       checkPassed({ sha: source, branch: "main", event: "push" }) &&
       (!pr ||
@@ -272,7 +267,7 @@ async function policy() {
           merged: pr.merged_at!,
         }));
     if (passed) break;
-    await new Promise((resolve) => setTimeout(resolve, 10000));
+    await new Promise((resolve) => setTimeout(resolve, releaseCiPollMs));
   }
   const parent = git("rev-parse", source + "^"),
     before = JSON.parse(git("show", parent + ":package.json")),
@@ -284,12 +279,12 @@ async function policy() {
   const removed = git("diff", "--diff-filter=D", "--name-only", parent, source, "--", ".changeset")
     .split("\n")
     .filter((p) => p.endsWith(".md") && !p.endsWith("README.md"));
-  const sourcePrs = removed.flatMap((path) => {
+  const sourcePrs = removed.map((path) => {
     const introducing = git("log", "-n", "1", "--diff-filter=A", "--format=%H", parent, "--", path);
     return introducing
       ? gh("repos/" + releaseRepository + "/commits/" + introducing + "/pulls")
       : [];
-  }) as { labels: { name: string }[] }[];
+  }) as BoundaryPull[][];
   const commit = git("show", "-s", "--format=%s%n%an%n%ae%n%cn%n%ce", source).split("\n");
   const evidence: Evidence = {
     repository: process.env.GITHUB_REPOSITORY ?? "local",
@@ -313,16 +308,7 @@ async function policy() {
           ["package.json", "bun.lock", "CHANGELOG.md", ".changeset/pre.json"].includes(p) ||
           removed.includes(p),
       ),
-    sourceBoundary:
-      removed.length > 0 &&
-      sourcePrs.length > 0 &&
-      sourcePrs.every(
-        (p) =>
-          p.labels.some((l) => l.name === "stack:boundary") &&
-          p.labels
-            .filter((l) => l.name.startsWith("stack:"))
-            .every((l) => l.name === "stack:boundary"),
-      ),
+    sourceBoundary: allChangesetsAtBoundary(sourcePrs),
     noneReason: /release-reason:\s*\S+/.test(pr?.body ?? ""),
   };
   const result = evaluateRelease(evidence),

@@ -5,6 +5,13 @@ import {
   evaluateRelease,
   workflowPassed,
   hasChangelogHeading,
+  allChangesetsAtBoundary,
+  hasInstallHook,
+  packageFacing,
+  generatedVersionPr,
+  releaseCiWaitAttempts,
+  releaseCiPollMs,
+  type BoundaryPull,
   type WorkflowEvidence,
   type Evidence,
 } from "../scripts/release-policy";
@@ -77,7 +84,7 @@ test("the published package is portable, public and has no install-time dependen
   expect(pkg.publishConfig).toEqual({ access: "public", registry: "https://registry.npmjs.org/" });
   expect(pkg.repository.url).toBe("git+https://github.com/outfitter-dev/skilltree.git");
   expect(pkg.dependencies).toBeUndefined();
-  expect(pkg.scripts.postinstall).toBeUndefined();
+  expect(hasInstallHook(pkg.scripts)).toBe(false);
   expect(pkg.scripts.prepublishOnly).toBe("node scripts/publish-guard.mjs");
   expect(pkg.files).not.toContain("dist/bin/");
   expect(pkg.files).toContain("dist/cli.mjs");
@@ -149,4 +156,71 @@ test("changelog evidence must name the exact release heading", () => {
   expect(hasChangelogHeading("# History\n\n## 0.1.0-rc.1\nDetails", "0.1.0-rc.1")).toBe(true);
   expect(hasChangelogHeading("## 0.1.0-rc.10", "0.1.0-rc.1")).toBe(false);
   expect(hasChangelogHeading("text mentions 0.1.0", "0.1.0")).toBe(false);
+});
+
+test("every consumed changeset needs an associated merged boundary PR", () => {
+  const pr: BoundaryPull = {
+    merged_at: "2026-10-01T12:00:00Z",
+    base: { ref: "main", repo: { full_name: "outfitter-dev/skilltree" } },
+    labels: [{ name: "stack:boundary" }],
+  };
+  expect(allChangesetsAtBoundary([[pr], [pr]])).toBe(true);
+  for (const groups of [
+    [],
+    [[]],
+    [[pr], []],
+    [[pr], [{ ...pr, labels: [] }]],
+    [[pr], [{ ...pr, merged_at: null }]],
+    [[pr], [{ ...pr, base: { ...pr.base, ref: "other" } }]],
+    [[pr], [{ ...pr, base: { ...pr.base, repo: { full_name: "other/skilltree" } } }]],
+    [[{ ...pr, labels: [...pr.labels, { name: "stack:part" }] }]],
+  ])
+    expect(allChangesetsAtBoundary(groups)).toBe(false);
+});
+test("all npm install lifecycle hooks are rejected", () => {
+  expect(hasInstallHook(undefined)).toBe(false);
+  expect(hasInstallHook({ prepublishOnly: "node scripts/publish-guard.mjs" })).toBe(false);
+  for (const name of ["preinstall", "install", "postinstall"])
+    expect(hasInstallHook({ [name]: "echo example" })).toBe(true);
+});
+test("all public payload paths require release intent", () => {
+  for (const path of [
+    "src/cli.ts",
+    "bin/skilltree.mjs",
+    "docs/releases.md",
+    "skills/helper/SKILL.md",
+    "agents/gardener.md",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "package.json",
+    "scripts/build.ts",
+  ])
+    expect(packageFacing([path])).toBe(true);
+  expect(packageFacing(["tests/release.test.ts", ".github/workflows/check.yml"])).toBe(false);
+});
+test("a version-like fork or human branch cannot bypass changeset checks", () => {
+  const pr = {
+    title: "chore(release): version packages",
+    user: { login: "github-actions[bot]" },
+    head: { ref: "changeset-release/main", repo: { full_name: "outfitter-dev/skilltree" } },
+    base: { ref: "main", repo: { full_name: "outfitter-dev/skilltree" } },
+  };
+  expect(generatedVersionPr({ pull_request: pr })).toBe(true);
+  expect(
+    generatedVersionPr({
+      pull_request: { ...pr, head: { ...pr.head, repo: { full_name: "fork/skilltree" } } },
+    }),
+  ).toBe(false);
+  expect(generatedVersionPr({ pull_request: { ...pr, user: { login: "someone" } } })).toBe(false);
+  expect(generatedVersionPr({ pull_request: { ...pr, base: { ...pr.base, ref: "other" } } })).toBe(
+    false,
+  );
+  expect(generatedVersionPr({})).toBe(false);
+});
+test("release policy wait covers CI timeout and a scheduling margin", () => {
+  const check = parse(fs.readFileSync(".github/workflows/check.yml", "utf8"));
+  expect(releaseCiWaitAttempts * releaseCiPollMs).toBeGreaterThanOrEqual(
+    (check.jobs["linux-node20"]["timeout-minutes"] + 5) * 60000,
+  );
 });

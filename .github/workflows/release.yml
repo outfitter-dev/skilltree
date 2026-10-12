@@ -189,12 +189,13 @@ jobs:
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             test "$(gh release view "$tag" --json isDraft --jq .isDraft)" = false
-            package_file="$(node -p 'require("./release-assets/release.json").tarball')"
+            gh release view "$tag" --json assets > "$RUNNER_TEMP/existing-assets.json"
+            node -e 'const fs=require("node:fs");const expected=fs.readdirSync("release-assets").sort();const actual=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).assets.map(a=>a.name).sort();if(JSON.stringify(expected)!==JSON.stringify(actual))throw Error("Existing release asset names differ");' "$RUNNER_TEMP/existing-assets.json"
             mkdir "$RUNNER_TEMP/existing-release"
-            gh release download "$tag" --pattern "$package_file" --dir "$RUNNER_TEMP/existing-release"
-            expected_sha="$(node -p 'require("./release-assets/release.json").sha256')"
-            actual_sha="$(sha256sum "$RUNNER_TEMP/existing-release/$package_file" | cut -d ' ' -f 1)"
-            test "$expected_sha" = "$actual_sha"
+            gh release download "$tag" --dir "$RUNNER_TEMP/existing-release"
+            for asset in release-assets/*; do
+              cmp "$asset" "$RUNNER_TEMP/existing-release/$(basename "$asset")"
+            done
             gh release view "$tag" --json url --jq .url
           elif [ "$RELEASE_TAG" = latest ]; then
             gh release create "$tag" --verify-tag --title "Skilltree $RELEASE_VERSION" --generate-notes release-assets/*

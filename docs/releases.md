@@ -22,7 +22,7 @@ Stable qualified releases use the existing `npm-auto` GitHub environment. Manual
 
 The publisher builds a clean exact source commit, stages one tarball, records SHA256/SHA512 integrity and embedded source identity, cold-installs the staged bytes, rechecks policy at publication time, then uses npm 11.18.0 on Node24 with OIDC and provenance. No `NPM_TOKEN` is configured. It verifies immutable registry integrity, the intended dist-tag and provenance before a separate fresh-cache Node20 registry install runs the isolated CLI workflow. Only then does it create `v<version>` and the GitHub release. Existing mismatched tags, versions or assets hold; no force push or asset clobber is used.
 
-If a publish or propagation check fails, publication may already have succeeded. Inspect registry state and rerun the original reviewed workflow. Exact occupied bytes are verified and skipped; different immutable bytes stop. Existing release assets must match the staged tarball. The workflow never silently moves a dist-tag to repair drift. `rc` candidates use the `rc` dist-tag and are not promoted to `latest`.
+If a publish or propagation check fails, publication may already have succeeded. Inspect registry state and rerun the original reviewed workflow. Exact occupied bytes are verified and skipped; different immutable bytes stop. Existing release asset names and every asset must match the staged release files. The workflow never silently moves a dist-tag to repair drift. `rc` candidates use the `rc` dist-tag and are not promoted to `latest`.
 
 ## Initial package bootstrap and required access
 
