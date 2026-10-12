@@ -1,20 +1,41 @@
 {
   "name": "@outfitter/skilltree",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "private": true,
-  "description": "A scaffold for Git-backed skill synchronization that preserves local edits.",
+  "description": "Git-backed skill synchronization with explicit content approvals and local-edit preservation.",
   "license": "MIT",
+  "bin": {
+    "skilltree": "bin/skilltree.mjs"
+  },
+  "files": [
+    "bin/",
+    "dist/cli.mjs",
+    "dist/bin/",
+    "README.md",
+    "LICENSE",
+    "docs/",
+    "skills/",
+    "agents/"
+  ],
   "type": "module",
   "scripts": {
     "dev": "bun src/cli.ts",
-    "build": "bun build src/cli.ts --target=bun --outdir=dist",
+    "build": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings src tests",
+    "lint": "oxlint --deny-warnings src tests scripts bin",
     "format:check": "oxfmt --check .",
     "format:fix": "oxfmt --write .",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run build",
-    "setup": "bash scripts/bootstrap.sh"
+    "setup": "bash scripts/bootstrap.sh",
+    "build:compile": "bun scripts/compile.ts",
+    "test:integration": "bun test --timeout 30000 tests/integration.test.ts",
+    "demo": "bun scripts/demo.ts",
+    "demo:restore": "bun scripts/restore-demo.ts"
+  },
+  "dependencies": {
+    "yaml": "2.8.3",
+    "zod": "4.3.5"
   },
   "devDependencies": {
     "@types/bun": "1.4.0",
@@ -23,7 +44,8 @@
     "typescript": "5.9.3"
   },
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.2",
+    "node": ">=20"
   },
   "packageManager": "bun@1.4.2"
 }
