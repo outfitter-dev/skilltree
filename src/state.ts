@@ -1,3 +1,4 @@
+import { libraryPending } from "./library-backup";
 import { execFileSync } from "node:child_process";
 import { setLockDescriptors, lockDescriptor } from "./lock-descriptor";
 import * as fs from "node:fs";
@@ -113,7 +114,7 @@ export function withLock<T>(ctx: Context, work: () => T, allowRecovery = false):
           fail("LOCKED", "Unsupported mixed-version directory writer detected");
       }
       setLockDescriptors(descriptors);
-      if (!allowRecovery && pending(ctx))
+      if (!allowRecovery && (pending(ctx) || libraryPending(ctx)))
         fail(
           "RECOVERY_REQUIRED",
           "Interrupted replacement exists; run recover before other writes",
@@ -144,7 +145,7 @@ export function withLock<T>(ctx: Context, work: () => T, allowRecovery = false):
       acquired.push(dir);
       atomicJson(join(dir, "owner.json"), { pid: process.pid });
     }
-    if (!allowRecovery && pending(ctx))
+    if (!allowRecovery && (pending(ctx) || libraryPending(ctx)))
       fail("RECOVERY_REQUIRED", "Interrupted replacement exists; run recover before other writes");
     return work();
   } finally {

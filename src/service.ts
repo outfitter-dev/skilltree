@@ -52,9 +52,20 @@ import {
   stageScratch,
   checkpointScratch,
 } from "./maintenance";
+import {
+  createLibrarySnapshot,
+  directoryTree,
+  libraryBackups,
+  libraryPending,
+  revertLibrary,
+  recoverLibrary,
+} from "./library-backup";
 import { probeSkills } from "./skills-adapter";
 
 export interface Options {
+  keepCurrent?: boolean;
+  snapshot?: string;
+  expect?: string;
   dryRun?: boolean;
   source?: string;
   ref?: string;
@@ -178,6 +189,7 @@ export function initialize(home: string, options: Options): unknown {
     transactionStorage: options.transactionStorage,
     runtimeRoot: options.runtimeRoot,
     runtimeVersion: 2,
+    libraryRecoveryVersion: 1,
     legacyRuntime: options.runtimeRoot ? undefined : runtimePath(destination),
     legacyLockName: options.runtimeRoot ? undefined : "kernel.lock",
     hostMetadata:
@@ -296,6 +308,7 @@ export function execute(
   const dryRun = options.dryRun ?? false;
   if (command === "init") return initialize(home, options);
   const ctx = load(home);
+  if (command === "backups") return libraryBackups(ctx);
   if (command === "list" || command === "status" || command === "verify") {
     const rows = ctx.lock.entries
       .filter((e) => !options.profile || e.profiles.includes(options.profile))
@@ -325,7 +338,7 @@ export function execute(
               : rows.some((e) => e.outcome === "STAGED")
                 ? "STAGED"
                 : "CURRENT",
-      pending: pending(ctx) !== null,
+      pending: pending(ctx) !== null || libraryPending(ctx),
       entries: rows,
     };
   }
@@ -349,6 +362,8 @@ export function execute(
       }
     if (exists(join(ctx.runtime, "lock")))
       issues.push("Runtime lock exists; use recover --unlock only after owner exits");
+    if (libraryPending(ctx))
+      issues.push("Interrupted whole-directory restoration; run recover --dry-run");
     if (pending(ctx)) issues.push("Interrupted replacement; run recover");
     for (const name of fs.readdirSync(ctx.manifest.destination))
       if (name.startsWith(".skilltree-transaction-")) {
@@ -434,7 +449,12 @@ export function execute(
     return probeSkills(sourceRoot(ctx, source(ctx, args[0] ?? "")), options.npx);
   if (command === "recover" && options.unlock) {
     const result = unlock(ctx, dryRun);
-    if (dryRun) return { outcome: "DRY_RUN", ...result, pending: pending(ctx) !== null };
+    if (dryRun)
+      return {
+        outcome: "DRY_RUN",
+        ...result,
+        pending: pending(ctx) !== null || libraryPending(ctx),
+      };
   }
   if (dryRun) return mutate(ctx, command, args, options);
   return withLock(
@@ -448,8 +468,19 @@ export function execute(
 }
 function mutate(ctx: Context, command: string, args: string[], options: Options): unknown {
   const dryRun = options.dryRun ?? false;
-  if (pending(ctx) && command !== "recover")
+  if ((pending(ctx) || libraryPending(ctx)) && command !== "recover")
     fail("RECOVERY_REQUIRED", "Run recover before further writes");
+  if (command === "backup") {
+    if (dryRun)
+      return {
+        outcome: "WOULD_BACKUP",
+        directory: directoryTree(ctx.home, ctx.manifest.destination),
+      };
+    const point = createLibrarySnapshot(ctx, options.reason ?? "explicit whole-directory backup");
+    return { outcome: "BACKED_UP", snapshot: point.id, hash: point.hash };
+  }
+  if (command === "revert")
+    return revertLibrary(ctx, required(options.snapshot, "snapshot"), options.expect, dryRun);
   if (command === "configure") return configure(ctx, options);
   if (command === "migrate-storage") return migrateStorage(ctx, dryRun);
   if (command === "compact") return compact(ctx, options);
@@ -625,7 +656,10 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
         events: eventsFor({ sources: results, entries }),
       };
     });
-  if (command === "recover") return recover(ctx, dryRun);
+  if (command === "recover")
+    return libraryPending(ctx)
+      ? recoverLibrary(ctx, dryRun, options.keepCurrent, options.expect)
+      : recover(ctx, dryRun);
   const entry = selection(ctx, args[0] ?? fail("USAGE", `${command} requires a selection ID`));
   if (command === "assign") {
     const profile = slug.parse(required(options.profile, "profile"));

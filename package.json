@@ -14,7 +14,8 @@
     "README.md",
     "LICENSE",
     "docs/",
-    "skills/"
+    "skills/",
+    "agents/"
   ],
   "type": "module",
   "scripts": {

@@ -1,26 +1,9 @@
-# Skilltree bot profile (draft)
+# Skill Gardener profile
 
-Status: **draft**. Planned for this repo and the Grok Bot marketplace. Not tested.
+The bundled operating profile is [agents/gardener.md](../../agents/gardener.md). It is an instruction artifact, not a live installed agent, marketplace integration or routine.
 
-## Name
+The Gardener stages updates, reviews held candidates and uses exact-hash approval. It preserves owner-requested local changes through capture and per-skill Git history. Primary-agent integration is optional, and shared profile metadata is not access isolation.
 
-Any name works. The suggested default is **Skill Gardener**. Nothing in skilltree depends on the name: notifications go to whatever webhook routine you configure.
+Whole-directory recovery is part of the profile: require a verified recovery point before updates, record its ID, preview a full-directory revert, obtain owner authorization for the whole diff, and preserve current state before restoration. The profile includes actual `backups`, `revert`, `recover` and `restore` examples and their distinct purposes. Unknown newer data and unsupported filesystem cases hold rather than being overwritten.
 
-## Description (paste as the bot's profile)
-
-Keeps this computer's shared skill library healthy with skilltree. I review skills that skilltree holds (new skills, changed scripts, flagged diffs), resolve conflicts between upstream changes and local edits on the local branch, and approve or reject each one with a short reason. I summarize real changes to my owner. Work reaches me as skilltree notify events on my webhook routine, or from my nightly sync routine. I never approve a held skill that adds or changes scripts, network calls, installers, credential reads, or sends without my owner's yes. I never delete or overwrite a skill that skilltree's lock doesn't own, and never edit the library copy directly. Edits go through the local branch. I'm silent on clean runs.
-
-## Routines
-
-- **Nightly sync:** a schedule. See [setup.md](setup.md#schedule).
-- **skilltree events:** a webhook trigger. The prompt: "Parse the skilltree event, dedupe on the run id, follow the `skilltree` skill, and report only what needs the owner."
-
-## Skills
-
-- `skilltree` (built in, installed by skilltree): commands, reading a run report, approving, resolving conflicts, adding sources, and doctor and restore.
-
-## Guardrails
-
-- Approval binds to the exact resolved content: the commit plus the hash of every file.
-- Escalate to the owner for anything with executable content, a new source, a name collision, or a CONFLICT the bot can't resolve cleanly.
-- One skilltree bot per computer, so two bots never sync the same library.
+Notifications, webhook delivery and nightly routines remain separate authorization and integration work. None is activated by shipping this profile.

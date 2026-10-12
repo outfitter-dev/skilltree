@@ -1,3 +1,4 @@
+import { createLibrarySnapshot, directoryTree, libraryHash } from "./library-backup";
 import { rememberBackup } from "./ownership";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
@@ -60,7 +61,11 @@ export function storage(ctx: Context, create: boolean): string {
   }
   if (
     fs.statSync(exists(root) ? root : dirname(root)).dev !==
-    fs.statSync(ctx.manifest.destination).dev
+    fs.statSync(
+      exists(ctx.manifest.destination)
+        ? ctx.manifest.destination
+        : dirname(ctx.manifest.destination),
+    ).dev
   )
     fail("STORAGE_FILESYSTEM", "Transaction storage must share the destination filesystem");
   fs.accessSync(exists(root) ? root : dirname(root), fs.constants.R_OK | fs.constants.W_OK);
@@ -104,7 +109,11 @@ export function applyEntry(
   if (entry.deployed?.hash === requestedHash && !entry.observed)
     return { id: entry.id, outcome: "CURRENT", hash: requestedHash };
   storage(ctx, false);
-  if (dryRun) return { id: entry.id, outcome: "WOULD_APPLY", hash: requestedHash };
+  if (dryRun) {
+    directoryTree(ctx.home, ctx.manifest.destination);
+    return { id: entry.id, outcome: "WOULD_APPLY", hash: requestedHash };
+  }
+  const recoveryPoint = createLibrarySnapshot(ctx, "before apply " + entry.id);
   storage(ctx, true);
   const next: Entry = {
     ...entry,
@@ -147,6 +156,9 @@ export function applyEntry(
     fail("STAGING_CHANGED", "Staged file set changed");
   if (destinationHash(ctx, target) !== oldHash)
     fail("DRIFT", "Destination changed before replacement; run recover");
+  if (libraryHash(ctx) !== recoveryPoint.hash)
+    fail("BACKUP_CHANGED", "Library changed after complete backup; recover before updating");
+  if (!exists(ctx.manifest.destination)) fs.mkdirSync(ctx.manifest.destination);
   if (oldHash !== null) fs.renameSync(target, p.backup);
   afterBackup?.();
   if (oldHash !== null && destinationHash(ctx, p.backup) !== oldHash)
@@ -170,6 +182,7 @@ export function applyEntry(
     outcome: "UPDATED",
     hash: requestedHash,
     retainedBackup: oldHash ? p.backup : null,
+    recoveryPoint: recoveryPoint.id,
   };
 }
 export function recover(ctx: Context, dryRun: boolean): unknown {

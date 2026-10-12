@@ -99,6 +99,23 @@ bun run dev -- restore --home /absolute/collection --dry-run
 bun run dev -- restore --home /absolute/collection
 ```
 
+## Whole-directory recovery
+
+Every actual apply verifies a complete supported-directory recovery point before updating the library, including outside-lock skills and host-owned files. Its returned `recoveryPoint` is content-addressed and stored outside the catalog in `library-backups/`, with immutable `library-blobs/` payloads. Manifests bind directory entries, basic permissions, operator ownership, content and collection state. A failed or changed backup holds the update.
+
+```sh
+skilltree backup --home /absolute/collection --reason 'Before maintenance'
+skilltree backups --home /absolute/collection
+skilltree revert --home /absolute/collection --snapshot <id> --dry-run
+skilltree revert --home /absolute/collection --snapshot <id> --expect <reviewed-current-hash>
+```
+
+Revert previews added, removed and changed paths, requires the reviewed current hash, and verifies a new current-state recovery point before restoring. It stages outside the catalog and journals the directory swap. `recover` completes recognized interrupted swaps or rolls back the preserved prior directory; newer unknown bytes hold. Latest source/local histories remain retained, while restored deployment baselines are held and approval/candidates cleared. Uncaptured drift stays drift. This can affect outside-lock data, so authorize the whole diff explicitly.
+
+`restore` remains archive materialization for generated Git caches; installer `--restore` rebuilds a runner. Whole-directory `revert` is distinct. Recovery points are retained indefinitely; `compact --retain-backups` never removes them. There is no recovery-point deletion policy installed.
+
+Support covers ordinary same-owner Unix files/directories and resolvable relative in-tree links, basic modes, up to 25,000 entries/200 MB/10 MB per file. Special files/permissions, hardlinks, owner changes, ACLs and unsupported xattrs hold. Linux requires `getfattr`/`getfacl`; macOS uses built-in xattr/ls. macOS-managed provenance and timestamps are not portable restored metadata. Host concurrency, actual Computer Update and power-loss durability remain separate evidence; no unconditional recovery guarantee is made. See the bundled [skill](skills/skilltree/SKILL.md) and [Gardener profile](agents/gardener.md).
+
 ## Configuration and explicit maintenance
 
 Resolve and verify destination aliases with `realpath` before initialization; Skilltree requires the canonical path and does not bypass symlink checks. `--storage` chooses a writable transaction root outside state and the catalog, on the same filesystem. The Grok adapter here implements filesystem preservation; sanctioned catalog refresh, host writers and Computer Update remain separate host integration contracts.
@@ -165,3 +182,12 @@ Keep domain, content, Git, inventory, state, and deployment boundaries separate.
 Licensed under the [MIT License](LICENSE).
 
 For a new checkout, `bun run setup` validates the pinned runtime and checkout-local `CLAUDE.md -> AGENTS.md`, installs frozen dependencies without lifecycle scripts, and runs checks. Configure Orca's setup command as `bash scripts/bootstrap.sh`, wait for successful setup before agent startup, and leave archive empty.
+
+For an interrupted revert that finds newer supported current data, an explicitly authorized keep-current recovery is available:
+
+```sh
+skilltree recover --home /absolute/state --keep-current --dry-run
+skilltree recover --home /absolute/state --keep-current --expect <reviewed-current-hash>
+```
+
+It verifies a new recovery point before canceling the interrupted restore, keeps current directory bytes and retained prior data, and leaves ownership drift for explicit reconciliation. It does not overwrite newer edits. Repeated completed reverts with unchanged directory and ownership state return CURRENT.

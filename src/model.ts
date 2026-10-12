@@ -108,6 +108,7 @@ export const manifestSchema = z
     transactionStorage: z.string().min(1).optional(),
     runtimeRoot: z.string().min(1).optional(),
     runtimeVersion: z.literal(2).optional(),
+    libraryRecoveryVersion: z.literal(1).optional(),
     legacyRuntime: z.string().optional(),
     legacyLockName: z.enum(["kernel.lock", "sync.lock"]).optional(),
     lockBackend: z.enum(["mkdir", "flock"]).optional(),

@@ -20,12 +20,15 @@ capture    <id>                        Adopt live edits into local Git history
 approve    <id> --hash <hash> --reason <review>
 apply      <id> --hash <hash>           Apply an exact approved candidate
 status | verify | doctor              Read-only state, drift and diagnostics
+backup     [--reason <reason>]         Verify complete directory recovery point
+backups                               List verified directory recovery points
+revert     --snapshot <id> --expect <reviewed-current-hash> [--dry-run]
 configure  [--adapter grok] [--runtime-root <path>] [--storage <path>]
 migrate-storage                       Relocate report-recognized legacy backups
 compact    --caches | --scratch | --retain-backups <count> [--dry-run]
 archive                               Archive intact accepted Git histories
 restore                               Materialize verified archives; preserve old checkouts
-recover    [--unlock]                  Explicit transaction/stale-lock recovery
+recover    [--unlock] [--keep-current --expect <hash>]                  Explicit transaction/stale-lock recovery
 probe      <source-id> [--npx <executable>]  Optional pinned skills CLI listing (Node >=22.20)
 
 All state-writing commands accept --dry-run; no authoritative state is changed.
@@ -46,6 +49,9 @@ const commands = new Set([
   "status",
   "verify",
   "doctor",
+  "backup",
+  "backups",
+  "revert",
   "configure",
   "migrate-storage",
   "compact",
@@ -86,6 +92,9 @@ export function main(args: string[]): number {
         caches: { type: "boolean" },
         scratch: { type: "boolean" },
         "retain-backups": { type: "string" },
+        snapshot: { type: "string" },
+        expect: { type: "string" },
+        "keep-current": { type: "boolean" },
       },
     });
     if (values.help || positionals.length === 0) {
@@ -110,12 +119,17 @@ export function main(args: string[]): number {
         "configure",
         "migrate-storage",
         "compact",
+        "backup",
+        "backups",
+        "revert",
       ].includes(command) &&
         positionals.length > 1)
     )
       throw new SkilltreeError("USAGE", "Unexpected positional arguments");
     const options: Options = {};
     for (const name of [
+      "snapshot",
+      "expect",
       "source",
       "ref",
       "path",
@@ -133,6 +147,7 @@ export function main(args: string[]): number {
         throw new SkilltreeError("USAGE", "Unknown lock backend");
       options.lockBackend = values["lock-backend"] as "mkdir" | "flock";
     }
+    if (values["keep-current"] !== undefined) options.keepCurrent = values["keep-current"];
     if (values.adapter !== undefined) {
       if (!["filesystem", "grok"].includes(values.adapter))
         throw new SkilltreeError("USAGE", "Unknown adapter");
