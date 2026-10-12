@@ -34,7 +34,8 @@ test("version identifies the runner without requiring state", async () => {
   expect(result.stderr).toBe("");
   const info = JSON.parse(result.stdout);
   expect(info.name).toBe("@outfitter/skilltree");
-  expect(info.version).toBe("0.1.0-rc.0");
+  const metadata = await Bun.file(new URL("../package.json", import.meta.url)).json();
+  expect(info.version).toBe(metadata.version);
   expect(info.revision).toBeDefined();
   expect(info.sourceHash).toMatch(/^[a-f0-9]{64}$/);
 });
