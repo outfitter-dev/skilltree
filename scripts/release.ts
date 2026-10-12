@@ -260,7 +260,8 @@ async function policy() {
       p.title === "chore(release): version packages",
   );
   let passed = false;
-  for (let attempt = 0; attempt < 30; attempt++) {
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (!passed) {
     passed =
       checkPassed({ sha: source, branch: "main", event: "push" }) &&
       (!pr ||
@@ -271,7 +272,7 @@ async function policy() {
           created: pr.created_at,
           merged: pr.merged_at!,
         }));
-    if (passed) break;
+    if (passed || Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 10000));
   }
   const parent = git("rev-parse", source + "^"),
