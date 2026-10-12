@@ -5,7 +5,7 @@ import { z } from "zod";
 import { hash, fail } from "./model";
 import { exists, assertNoSymlinks } from "./files";
 import { checkMetadata } from "./filesystem-capabilities";
-import { readScratchJournal, reservationPaths } from "./scratch-journal";
+import { readScratchJournal, reservationPaths, scratchJournalPath } from "./scratch-journal";
 const markerSchema = z
   .object({
     version: z.literal(3),
@@ -55,6 +55,11 @@ export function reservedScratch(
     claimed = new Set<string>(),
     candidates: { root: string; kind: string; files: number }[] = [],
     held = [...journal.held];
+  if (!journal.capacity.usable)
+    held.push({
+      root: scratchJournalPath(home),
+      reason: "Scratch journal cannot fit a complete allocation; use recover --scratch --dry-run",
+    });
   for (const row of journal.reservations.values()) {
     const { temp, marker } = reservationPaths(home, row);
     claimed.add(basename(temp));

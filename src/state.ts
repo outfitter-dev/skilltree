@@ -1,3 +1,4 @@
+import { scratchRepairPending } from "./scratch-journal";
 import { libraryPending } from "./library-backup";
 import { execFileSync } from "node:child_process";
 import { setLockDescriptors, lockDescriptor } from "./lock-descriptor";
@@ -114,7 +115,7 @@ export function withLock<T>(ctx: Context, work: () => T, allowRecovery = false):
           fail("LOCKED", "Unsupported mixed-version directory writer detected");
       }
       setLockDescriptors(descriptors);
-      if (!allowRecovery && (pending(ctx) || libraryPending(ctx)))
+      if (!allowRecovery && (pending(ctx) || libraryPending(ctx) || scratchRepairPending(ctx.home)))
         fail(
           "RECOVERY_REQUIRED",
           "Interrupted replacement exists; run recover before other writes",
@@ -145,7 +146,7 @@ export function withLock<T>(ctx: Context, work: () => T, allowRecovery = false):
       acquired.push(dir);
       atomicJson(join(dir, "owner.json"), { pid: process.pid });
     }
-    if (!allowRecovery && (pending(ctx) || libraryPending(ctx)))
+    if (!allowRecovery && (pending(ctx) || libraryPending(ctx) || scratchRepairPending(ctx.home)))
       fail("RECOVERY_REQUIRED", "Interrupted replacement exists; run recover before other writes");
     return work();
   } finally {

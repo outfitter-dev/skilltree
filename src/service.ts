@@ -1,3 +1,5 @@
+import { recoverScratch } from "./scratch-recovery";
+import { readScratchJournal, scratchRepairPending } from "./scratch-journal";
 import { compactLibrary } from "./library-maintenance";
 import { checkedPython, type PythonIdentity } from "./filesystem-capabilities";
 import * as fs from "node:fs";
@@ -385,6 +387,18 @@ export function execute(
         `Complete backup unavailable: ${error instanceof Error ? error.message : "Metadata inspection failed"}`,
       );
     }
+    const scratchStatus = readScratchJournal(ctx.home);
+    if (scratchRepairPending(ctx.home))
+      issues.push("Interrupted scratch journal repair; run recover --scratch --dry-run");
+    if (scratchStatus.capacity.warning)
+      warnings.push(
+        "Scratch journal near capacity; inspect recover --scratch --dry-run before another backup",
+      );
+    for (const preserved of scratchStatus.preserved)
+      warnings.push(`Sealed scratch journal preserved: ${preserved.root}: ${preserved.reason}`);
+    const retainedDirectories = compactLibrary(ctx, { retainedDirectories: true, dryRun: true });
+    for (const item of retainedDirectories.held)
+      issues.push(`Held retained directory: ${item.root}: ${item.reason}`);
     const backupScratch = compactLibrary(ctx, { backupScratch: true, dryRun: true });
     for (const item of backupScratch.held)
       issues.push(`Held backup scratch: ${item.root}: ${item.reason}`);
@@ -470,6 +484,8 @@ export function execute(
       warnings,
       metadataInspector,
       backupScratch,
+      scratchCapacity: scratchStatus.capacity,
+      retainedDirectories,
       adapter: `${ctx.manifest.adapter}; filesystem preservation; catalog pickup unverified`,
       policy: ctx.manifest.policy,
       primary: ctx.manifest.primary,
@@ -499,8 +515,14 @@ export function execute(
 }
 function mutate(ctx: Context, command: string, args: string[], options: Options): unknown {
   const dryRun = options.dryRun ?? false;
-  if ((pending(ctx) || libraryPending(ctx)) && command !== "recover")
+  if (
+    (pending(ctx) || libraryPending(ctx) || scratchRepairPending(ctx.home)) &&
+    command !== "recover"
+  )
     fail("RECOVERY_REQUIRED", "Run recover before further writes");
+  if (command === "recover" && options.scratch) return recoverScratch(ctx, dryRun, options.expect);
+  if (scratchRepairPending(ctx.home))
+    fail("RECOVERY_REQUIRED", "Run recover --scratch --dry-run to inspect pending journal repair");
   if (command === "backup") {
     if (dryRun)
       return {

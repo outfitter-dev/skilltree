@@ -151,7 +151,14 @@ export function compactLibrary(
         try {
           const transaction = z.string().uuid().parse(name.slice(8));
           const marker = receiptPath(ctx, transaction),
-            record = retainedSchema.parse(readJson(marker));
+            record = (() => {
+              if (!exists(marker))
+                fail(
+                  "OWNERSHIP_HELD",
+                  `Retained stage/prior directory has no collection receipt; inspect without deleting: ${path}`,
+                );
+              return retainedSchema.parse(readJson(marker));
+            })();
           if (
             record.collection !== ctx.home ||
             record.root !== path ||

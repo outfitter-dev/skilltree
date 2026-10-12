@@ -31,10 +31,12 @@ export function atomicJson(path: string, value: unknown): void {
   assertNoSymlinks(path);
   fs.mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${randomUUID()}.tmp`;
-  const fd = fs.openSync(temp, "wx", 0o600);
+  const fd = storageWrite(temp, () => fs.openSync(temp, "wx", 0o600));
   try {
-    fs.writeFileSync(fd, JSON.stringify(value, null, 2) + "\n");
-    fs.fsyncSync(fd);
+    storageWrite(temp, () => {
+      fs.writeFileSync(fd, JSON.stringify(value, null, 2) + "\n");
+      fs.fsyncSync(fd);
+    });
   } finally {
     fs.closeSync(fd);
   }
@@ -155,4 +157,18 @@ export function triage(old: Tree | null, next: Tree): string[] {
       reasons.push(`Review network, sensitive actions, or instructions: ${path}`);
   }
   return reasons;
+}
+
+export function storageWrite<T>(path: string, work: () => T): T {
+  try {
+    return work();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (["EFBIG", "ENOSPC", "EDQUOT"].includes(String(code)))
+      fail(
+        `STORAGE_${code}`,
+        `Storage write failed (${code}): ${path}; partial bytes are preserved for reviewed recovery`,
+      );
+    throw error;
+  }
 }

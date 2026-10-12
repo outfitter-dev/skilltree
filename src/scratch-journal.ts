@@ -3,7 +3,7 @@ import { join, dirname, basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { hash, fail } from "./model";
-import { assertNoSymlinks, exists } from "./files";
+import { assertNoSymlinks, exists, storageWrite } from "./files";
 
 const reserveSchema = z
   .object({
@@ -20,14 +20,38 @@ const reserveSchema = z
 const createdSchema = z
   .object({ kind: z.literal("created"), id: z.string().uuid(), ino: z.number(), dev: z.number() })
   .strict();
-const rowSchema = z.union([reserveSchema, createdSchema]);
+const sealedSchema = z
+  .object({ kind: z.literal("sealed"), key: hash, id: z.string().uuid(), reason: z.string() })
+  .strict();
+const rowSchema = z.union([reserveSchema, createdSchema, sealedSchema]);
 export type Reservation = z.infer<typeof reserveSchema>;
 export interface ScratchJournal {
   reservations: Map<string, Reservation>;
   created: Map<string, { ino: number; dev: number }>;
   held: { root: string; reason: string }[];
+  preserved: { root: string; reason: string }[];
+  sealed: z.infer<typeof sealedSchema>[];
+  capacity: { bytes: number; remaining: number; usable: boolean; warning: boolean };
 }
-const MAX_BYTES = 64_000_000;
+export const MAX_SCRATCH_BYTES = 64_000_000;
+const MAX_BYTES = MAX_SCRATCH_BYTES;
+export const MIN_SCRATCH_CYCLE = 2048;
+export const scratchSealPath = (home: string, key: string, id: string) =>
+  assertNoSymlinks(
+    join(home, "library-scratch-seals", `${hash.parse(key)}.${z.string().uuid().parse(id)}.jsonl`),
+  );
+export const scratchRepairPending = (home: string) =>
+  exists(join(home, "library-scratch-repair.json"));
+export const scratchHeader = (home: string) =>
+  JSON.stringify({ version: 1, collection: home }) + "\n";
+export const scratchLine = (body: unknown) =>
+  JSON.stringify({
+    ...(body as object),
+    checksum: createHash("sha256").update(JSON.stringify(body)).digest("hex"),
+  }) + "\n";
+export function clearScratchCache(home: string): void {
+  cache.delete(home);
+}
 export const scratchJournalPath = (home: string) =>
   assertNoSymlinks(join(home, "library-scratch.jsonl"));
 export function reservationPaths(home: string, row: Reservation) {
@@ -38,7 +62,7 @@ export function reservationPaths(home: string, row: Reservation) {
   };
 }
 const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
-const header = (home: string) => JSON.stringify({ version: 1, collection: home }) + "\n";
+const header = scratchHeader;
 function safeJournal(path: string): void {
   const s = fs.lstatSync(path);
   if (
@@ -56,10 +80,24 @@ function safeJournal(path: string): void {
 }
 export function readScratchJournal(home: string): ScratchJournal {
   const path = join(home, "library-scratch.jsonl"),
-    result: ScratchJournal = { reservations: new Map(), created: new Map(), held: [] };
+    result: ScratchJournal = {
+      reservations: new Map(),
+      created: new Map(),
+      held: [],
+      preserved: [],
+      sealed: [],
+      capacity: { bytes: 0, remaining: MAX_BYTES, usable: true, warning: false },
+    };
   try {
     assertNoSymlinks(path);
     if (!exists(path)) return result;
+    const size = fs.lstatSync(path).size;
+    result.capacity = {
+      bytes: size,
+      remaining: MAX_BYTES - size,
+      usable: MAX_BYTES - size >= MIN_SCRATCH_CYCLE,
+      warning: MAX_BYTES - size <= 1000000,
+    };
     safeJournal(path);
     const bytes = fs.readFileSync(path, "utf8");
     if (!bytes.startsWith(header(home)))
@@ -79,6 +117,18 @@ export function readScratchJournal(home: string): ScratchJournal {
         if (row.kind === "reserve") {
           if (result.reservations.has(row.id)) throw new Error("duplicate");
           result.reservations.set(row.id, row);
+        } else if (row.kind === "sealed") {
+          const sealed = scratchSealPath(home, row.key, row.id);
+          const stat = fs.lstatSync(sealed);
+          if (
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            (stat.mode & 0o7777) !== 0o600 ||
+            digest(fs.readFileSync(sealed)) !== row.key
+          )
+            throw new Error("seal");
+          result.sealed.push(row);
+          result.preserved.push({ root: sealed, reason: row.reason });
         } else {
           if (!result.reservations.has(row.id) || result.created.has(row.id))
             throw new Error("ownership");
@@ -96,7 +146,7 @@ export function readScratchJournal(home: string): ScratchJournal {
       result.held.push({
         root: path,
         reason:
-          "Interrupted scratch journal append; preserve partial tail. No scratch creation follows an unfinished reservation",
+          "Interrupted scratch journal append; preserve bytes. A partial creation checkpoint may follow existing empty scratch. Use recover --scratch --dry-run",
       });
   } catch (error) {
     result.held.push({
@@ -130,12 +180,16 @@ export type BlobBoundary =
 export type BoundaryHook = (phase: BlobBoundary, path: string) => void;
 function writableJournal(home: string, hook?: BoundaryHook): ScratchJournal {
   const path = scratchJournalPath(home);
+  if (scratchRepairPending(home))
+    fail("RECOVERY_REQUIRED", "Scratch journal repair is pending; run recover --scratch");
   if (!exists(path)) {
-    const fd = fs.openSync(path, "wx", 0o600);
+    const fd = storageWrite(path, () => fs.openSync(path, "wx", 0o600));
     try {
       hook?.("journal-opened", path);
-      fs.writeFileSync(fd, header(home));
-      fs.fsyncSync(fd);
+      storageWrite(path, () => {
+        fs.writeFileSync(fd, header(home));
+        fs.fsyncSync(fd);
+      });
     } finally {
       fs.closeSync(fd);
     }
@@ -155,8 +209,10 @@ function writableJournal(home: string, hook?: BoundaryHook): ScratchJournal {
     old.mtime === stat.mtimeMs &&
     old.ino === stat.ino &&
     old.dev === stat.dev
-  )
+  ) {
+    if (old.journal.held.length) fail("BACKUP_SCRATCH_HELD", old.journal.held[0]!.reason);
     return old.journal;
+  }
   const journal = readScratchJournal(home);
   if (journal.held.length) fail("BACKUP_SCRATCH_HELD", `${journal.held[0]!.reason}: ${path}`);
   cache.set(home, { journal, size: stat.size, mtime: stat.mtimeMs, ino: stat.ino, dev: stat.dev });
@@ -165,28 +221,36 @@ function writableJournal(home: string, hook?: BoundaryHook): ScratchJournal {
 function append(home: string, body: z.infer<typeof rowSchema>, hook?: BoundaryHook): void {
   const journal = writableJournal(home, hook),
     path = scratchJournalPath(home);
-  const line = JSON.stringify({ ...body, checksum: digest(JSON.stringify(body)) }) + "\n";
+  const line = scratchLine(body);
   if (fs.statSync(path).size + Buffer.byteLength(line) > MAX_BYTES)
     fail(
       "BACKUP_LIMIT",
       `Scratch reservation journal reached 64 MB; preserve and review metadata maintenance: ${path}`,
     );
-  const fd = fs.openSync(path, "a");
+  const fd = storageWrite(path, () => fs.openSync(path, "a"));
   try {
-    if (hook) {
-      const mid = Math.floor(line.length / 2);
-      fs.writeFileSync(fd, line.slice(0, mid));
-      hook(body.kind === "reserve" ? "reservation-partial" : "creation-partial", path);
-      fs.writeFileSync(fd, line.slice(mid));
-      hook(body.kind === "reserve" ? "reservation-written" : "creation-written", path);
-    } else fs.writeFileSync(fd, line);
-    fs.fsyncSync(fd);
+    storageWrite(path, () => {
+      if (hook) {
+        const mid = Math.floor(line.length / 2);
+        fs.writeFileSync(fd, line.slice(0, mid));
+        hook(body.kind === "reserve" ? "reservation-partial" : "creation-partial", path);
+        fs.writeFileSync(fd, line.slice(mid));
+        hook(body.kind === "reserve" ? "reservation-written" : "creation-written", path);
+      } else fs.writeFileSync(fd, line);
+      fs.fsyncSync(fd);
+    });
   } finally {
     fs.closeSync(fd);
   }
   if (body.kind === "reserve") journal.reservations.set(body.id, body);
-  else journal.created.set(body.id, { ino: body.ino, dev: body.dev });
+  else if (body.kind === "created") journal.created.set(body.id, { ino: body.ino, dev: body.dev });
   const stat = fs.statSync(path);
+  journal.capacity = {
+    bytes: stat.size,
+    remaining: MAX_BYTES - stat.size,
+    usable: MAX_BYTES - stat.size >= MIN_SCRATCH_CYCLE,
+    warning: MAX_BYTES - stat.size <= 1000000,
+  };
   cache.set(home, { journal, size: stat.size, mtime: stat.mtimeMs, ino: stat.ino, dev: stat.dev });
 }
 export function prepareBlobIntent(
@@ -223,20 +287,29 @@ export function prepareBlobIntent(
     markerHash: digest(bytes),
     markerSize: bytes.length,
   };
+  writableJournal(home, hook);
+  const needed = Math.max(MIN_SCRATCH_CYCLE, Buffer.byteLength(scratchLine(row)) + 512);
+  if (fs.statSync(scratchJournalPath(home)).size + needed > MAX_BYTES)
+    fail(
+      "BACKUP_LIMIT",
+      `Scratch journal cannot fit reservation and creation checkpoint: ${scratchJournalPath(home)}; use recover --scratch --dry-run`,
+    );
   // The permanent reservation is fsynced before any disposable intent or blob.
   append(home, row, hook);
   hook?.("reservation-durable", temp);
   fs.mkdirSync(dirname(marker), { recursive: true, mode: 0o700 });
-  const fd = fs.openSync(assertNoSymlinks(marker), "wx", 0o600);
+  const fd = storageWrite(marker, () => fs.openSync(assertNoSymlinks(marker), "wx", 0o600));
   try {
     hook?.("intent-opened", marker);
-    if (hook) {
-      const mid = Math.floor(bytes.length / 2);
-      fs.writeFileSync(fd, bytes.subarray(0, mid));
-      hook("intent-partial", marker);
-      fs.writeFileSync(fd, bytes.subarray(mid));
-    } else fs.writeFileSync(fd, bytes);
-    fs.fsyncSync(fd);
+    storageWrite(marker, () => {
+      if (hook) {
+        const mid = Math.floor(bytes.length / 2);
+        fs.writeFileSync(fd, bytes.subarray(0, mid));
+        hook("intent-partial", marker);
+        fs.writeFileSync(fd, bytes.subarray(mid));
+      } else fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+    });
   } finally {
     fs.closeSync(fd);
   }

@@ -14,6 +14,7 @@ import {
   inside,
   readTree,
   treeHash,
+  storageWrite,
 } from "./files";
 import { save, type Context } from "./state";
 import { storageRoot, storage as ensureStorage } from "./deployment";
@@ -102,14 +103,16 @@ export function putBlob(
   fs.mkdirSync(dirname(path), { recursive: true });
   const intent = prepareBlobIntent(home, key, bytes, boundary),
     temp = intent.temp;
-  const fd = fs.openSync(temp, "wx", 0o600);
+  const fd = storageWrite(temp, () => fs.openSync(temp, "wx", 0o600));
   try {
     boundary?.("temp-created", temp);
     checkpointBlobCreation(home, intent.row, fd, boundary);
     boundary?.("created-durable", temp);
     afterIntent?.(temp);
-    fs.writeFileSync(fd, bytes);
-    fs.fsyncSync(fd);
+    storageWrite(temp, () => {
+      fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+    });
     boundary?.("payload-written", temp);
   } finally {
     fs.closeSync(fd);
@@ -309,7 +312,9 @@ function materialize(ctx: Context, point: Snapshot, root: string): void {
     fs.mkdirSync(join(root, path), { mode: 0o700 });
   for (const [path, row] of entries.filter(([, r]) => r.kind === "file")) {
     const target = join(root, path);
-    fs.writeFileSync(target, getBlob(ctx.home, row.blob!), { flag: "wx", mode: 0o600 });
+    storageWrite(target, () =>
+      fs.writeFileSync(target, getBlob(ctx.home, row.blob!), { flag: "wx", mode: 0o600 }),
+    );
     fs.chmodSync(target, row.mode);
   }
   for (const [path, row] of entries.filter(([, r]) => r.kind === "link"))

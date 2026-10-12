@@ -30,7 +30,7 @@ migrate-storage                       Relocate report-recognized legacy backups
 compact    --caches | --scratch | --retain-backups <count> | --retained-directories | --backup-scratch [--dry-run]
 archive                               Archive intact accepted Git histories
 restore                               Materialize verified archives; preserve old checkouts
-recover    [--unlock] [--quiet-host] [--keep-current --expect <hash>]                  Explicit transaction/stale-lock recovery
+recover    [--scratch --expect <reviewed-journal-hash>] [--unlock] [--quiet-host] [--keep-current --expect <hash>]                  Explicit transaction/stale-lock recovery
 probe      <source-id> [--npx <executable>]  Optional pinned skills CLI listing (Node >=22.20)
 
 All state-writing commands accept --dry-run; no authoritative state is changed.
