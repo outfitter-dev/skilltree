@@ -267,7 +267,11 @@ test("recovery completes an already replaced directory and refuses unknown bytes
 test("explicit stale lock recovery does not change approvals", () => {
   const f = fixture();
   try {
-    const runtime = runtimePath(f.dest);
+    const runtime = runtimePath(
+      f.dest,
+      load(f.home).manifest.runtimeRoot,
+      load(f.home).manifest.runtimeVersion,
+    );
     fs.mkdirSync(join(runtime, "lock"), { recursive: true });
     atomicJson(join(runtime, "lock/owner.json"), { pid: 2147483647 });
     const before = authoritative(f.home);
@@ -291,7 +295,18 @@ test("read-only diagnostics leave state and runtime lock untouched", () => {
       execute(f.home, command, command === "inventory" ? ["upstream"] : []);
     }
     expect(authoritative(f.home)).toBe(before);
-    expect(fs.existsSync(join(runtimePath(f.dest), "lock"))).toBe(false);
+    expect(
+      fs.existsSync(
+        join(
+          runtimePath(
+            f.dest,
+            load(f.home).manifest.runtimeRoot,
+            load(f.home).manifest.runtimeVersion,
+          ),
+          "lock",
+        ),
+      ),
+    ).toBe(false);
   } finally {
     f.cleanup();
   }
@@ -449,7 +464,18 @@ test("process exit during replacement leaves a stale lock and recovers through a
       stderr: "pipe",
     });
     expect(crash.exitCode).toBe(17);
-    expect(fs.existsSync(join(runtimePath(f.dest), "lock"))).toBe(true);
+    expect(
+      fs.existsSync(
+        join(
+          runtimePath(
+            f.dest,
+            load(f.home).manifest.runtimeRoot,
+            load(f.home).manifest.runtimeVersion,
+          ),
+          "lock",
+        ),
+      ),
+    ).toBe(true);
     expect(liveHash(join(f.dest, "helper"))).toBeNull();
     const restarted = Bun.spawnSync(
       [process.execPath, "src/cli.ts", "recover", "--home", f.home, "--unlock"],
@@ -457,7 +483,18 @@ test("process exit during replacement leaves a stale lock and recovers through a
     );
     expect(restarted.exitCode).toBe(0);
     expect(JSON.parse(restarted.stdout.toString()).result.outcome).toBe("RECOVERED");
-    expect(fs.existsSync(join(runtimePath(f.dest), "lock"))).toBe(false);
+    expect(
+      fs.existsSync(
+        join(
+          runtimePath(
+            f.dest,
+            load(f.home).manifest.runtimeRoot,
+            load(f.home).manifest.runtimeVersion,
+          ),
+          "lock",
+        ),
+      ),
+    ).toBe(false);
     expect(liveHash(join(f.dest, "helper"))).toBe(before);
   } finally {
     f.cleanup();

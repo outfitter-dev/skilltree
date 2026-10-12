@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -34,7 +33,7 @@ import {
   sourcePath,
 } from "./git";
 import { discover, metadataTree } from "./discovery";
-import { load, pending, save, unlock, withLock, type Context } from "./state";
+import { load, pending, save, unlock, withLock, runtimePath, type Context } from "./state";
 import { destinationHash, applyEntry, expectedLive, recover, targetPath } from "./deployment";
 import {
   materialize,
@@ -42,8 +41,17 @@ import {
   archiveRepository,
   archiveAccepted,
   restoreMaterializations,
+  readArchive,
 } from "./archives";
 import { localPath } from "./git";
+import {
+  configure,
+  migrateStorage,
+  compact,
+  sourceFailure,
+  stageScratch,
+  checkpointScratch,
+} from "./maintenance";
 import { probeSkills } from "./skills-adapter";
 
 export interface Options {
@@ -62,6 +70,12 @@ export interface Options {
   gardener?: string;
   unlock?: boolean;
   npx?: string;
+  adapter?: "filesystem" | "grok";
+  transactionStorage?: string;
+  runtimeRoot?: string;
+  caches?: boolean;
+  scratch?: boolean;
+  retainBackups?: number;
   hostMetadata?: boolean;
   lockBackend?: "mkdir" | "flock";
 }
@@ -138,8 +152,8 @@ function report(ctx: Context, command: string, result: unknown): unknown {
   atomicJson(join(ctx.home, "reports", `${runId}.json`), { runId, command, result, events });
   return { runId, result, events };
 }
-function scratch<T>(work: (root: string) => T): T {
-  const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "skilltree-stage-")));
+function scratch<T>(ctx: Context, work: (root: string) => T): T {
+  const root = stageScratch(ctx);
   try {
     return work(root);
   } finally {
@@ -160,8 +174,14 @@ export function initialize(home: string, options: Options): unknown {
   const manifest = manifestSchema.parse({
     version: 1,
     destination,
-    adapter: "filesystem",
-    hostMetadata: options.hostMetadata ? ["workflow.md", "runs.json"] : [],
+    adapter: options.adapter ?? "filesystem",
+    transactionStorage: options.transactionStorage,
+    runtimeRoot: options.runtimeRoot,
+    runtimeVersion: 2,
+    legacyRuntime: options.runtimeRoot ? undefined : runtimePath(destination),
+    legacyLockName: options.runtimeRoot ? undefined : "kernel.lock",
+    hostMetadata:
+      options.hostMetadata || options.adapter === "grok" ? ["workflow.md", "runs.json"] : [],
     lockBackend: options.lockBackend ?? (process.platform === "linux" ? "flock" : "mkdir"),
     exclusiveDestination: true,
     gardener: options.gardener ?? "gardener",
@@ -186,7 +206,20 @@ function stage(
   scratchRoot: string,
 ): Entry {
   const target = targetPath(ctx, entry.id);
-  if (destinationHash(ctx, target) !== expectedLive(entry))
+  let observed: string | null;
+  try {
+    observed = destinationHash(ctx, target);
+  } catch {
+    return {
+      ...entry,
+      candidate: null,
+      outcome: "HELD",
+      reasons: [
+        "Destination metadata/tree is unsupported; configure explicit host ownership or reconcile this skill",
+      ],
+    };
+  }
+  if (observed !== expectedLive(entry))
     return {
       ...entry,
       candidate: null,
@@ -302,6 +335,7 @@ export function execute(
   }
   if (command === "doctor") {
     const issues: string[] = [];
+    const warnings: string[] = [];
     try {
       execFileSync("git", ["--version"], { stdio: "pipe" });
     } catch {
@@ -316,19 +350,40 @@ export function execute(
     if (exists(join(ctx.runtime, "lock")))
       issues.push("Runtime lock exists; use recover --unlock only after owner exits");
     if (pending(ctx)) issues.push("Interrupted replacement; run recover");
-    if (
-      fs
-        .readdirSync(ctx.manifest.destination)
-        .some((name) => name.startsWith(".skilltree-transaction-"))
-    )
-      issues.push(
-        "Legacy destination-local transactions remain retained; catalog exposure needs deliberate migration",
-      );
+    for (const name of fs.readdirSync(ctx.manifest.destination))
+      if (name.startsWith(".skilltree-transaction-")) {
+        const root = join(ctx.manifest.destination, name);
+        if (exists(join(root, "backup/SKILL.md")) || exists(join(root, "stage/SKILL.md")))
+          issues.push(
+            "Legacy catalog-visible storage remains; run migrate-storage --dry-run and reconcile recognized ownership",
+          );
+        else
+          warnings.push(
+            "Empty or unrecognized legacy folder retained; inspect without deleting unknown work",
+          );
+      }
     for (const item of ctx.lock.sources) {
       try {
         sourceRoot(ctx, item);
       } catch {
-        issues.push(`${item.id}: acquired source missing, dirty, or at an unexpected revision`);
+        let suggestion = "";
+        try {
+          if (item.archive) {
+            const archive = readArchive(ctx.home, item.archive);
+            if (
+              archive.kind === "source" &&
+              archive.id === item.id &&
+              archive.revision === item.revision &&
+              archive.repository === item.repository
+            )
+              suggestion = "; valid archive available: run restore --dry-run";
+          }
+        } catch {
+          /* Corrupt archives must not be recommended. */
+        }
+        issues.push(
+          `${item.id}: acquired source missing, dirty, or at an unexpected revision${suggestion}`,
+        );
       }
     }
     for (const entry of ctx.lock.entries) {
@@ -346,13 +401,30 @@ export function execute(
         if (destinationHash(ctx, targetPath(ctx, entry.id)) !== expectedLive(entry))
           issues.push(`${entry.id}: live drift; capture or reconcile`);
       } catch (error) {
-        issues.push(`${entry.id}: ${error instanceof Error ? error.message : "Invalid state"}`);
+        let suggestion = "";
+        try {
+          if (entry.local?.archive) {
+            const archive = readArchive(ctx.home, entry.local.archive);
+            if (
+              archive.kind === "local" &&
+              archive.id === entry.id &&
+              archive.revision === entry.local.commit
+            )
+              suggestion = "; valid archive available: run restore --dry-run";
+          }
+        } catch {
+          /* No unsafe restore hint. */
+        }
+        issues.push(
+          `${entry.id}: ${error instanceof Error ? error.message : "Invalid state"}${suggestion}`,
+        );
       }
     }
     return {
       outcome: issues.length ? "ERROR" : "OK",
       issues,
-      adapter: "filesystem; catalog pickup unverified",
+      warnings,
+      adapter: `${ctx.manifest.adapter}; filesystem preservation; catalog pickup unverified`,
       policy: ctx.manifest.policy,
       primary: ctx.manifest.primary,
       gardener: ctx.manifest.gardener,
@@ -378,6 +450,9 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
   const dryRun = options.dryRun ?? false;
   if (pending(ctx) && command !== "recover")
     fail("RECOVERY_REQUIRED", "Run recover before further writes");
+  if (command === "configure") return configure(ctx, options);
+  if (command === "migrate-storage") return migrateStorage(ctx, dryRun);
+  if (command === "compact") return compact(ctx, options);
   if (command === "archive") return archiveAccepted(ctx, dryRun);
   if (command === "restore") return restoreMaterializations(ctx, dryRun);
   if (command === "add") {
@@ -385,8 +460,9 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (ctx.lock.sources.some((s) => s.id === id)) fail("EXISTS", "Source ID already exists");
     const repo = repository(args[0] ?? fail("USAGE", "add requires a Git source"));
     const ref = options.ref ?? "HEAD";
-    return scratch((root) => {
+    return scratch(ctx, (root) => {
       const acquired = acquire(root, id, repo, ref);
+      checkpointScratch(root);
       const accepted = dryRun
         ? acquired
         : publishSource(ctx.home, {
@@ -451,7 +527,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     return { outcome: dryRun ? "WOULD_SELECT" : "SELECTED", entry };
   }
   if (command === "sync")
-    return scratch((scratchRoot) => {
+    return scratch(ctx, (scratchRoot) => {
       const results: {
         id: string;
         outcome: "STAGED" | "ERROR";
@@ -466,14 +542,16 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           fs.mkdirSync(home, { recursive: true });
           const item = acquire(home, s.id, s.repository, s.ref);
           const root = join(home, "repos", s.id);
+          checkpointScratch(scratchRoot);
           const entries = ctx.lock.entries
             .filter((e) => e.source === s.id)
             .map((e) => stage(ctx, e, item, root, true, scratchRoot));
           sourceRoot(ctx, s);
+          checkpointScratch(scratchRoot);
           successful.set(s.id, { source: item, root, entries });
           results.push({ id: s.id, outcome: "STAGED" });
         } catch (error) {
-          const code = error instanceof SkilltreeError ? error.code : "SOURCE_FAILED";
+          const code = error instanceof SkilltreeError ? error.code : sourceFailure(error);
           results.push({
             id: s.id,
             outcome: "ERROR",
@@ -504,7 +582,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           successful.delete(s.id);
           const result = results.find((r) => r.id === s.id)!;
           result.outcome = "ERROR";
-          result.code = error instanceof SkilltreeError ? error.code : "SOURCE_FAILED";
+          result.code = error instanceof SkilltreeError ? error.code : sourceFailure(error);
           result.message = `Source ${s.id} held; accepted state retained`;
           if (previous.length === 1) fail(result.code, result.message);
           return s;
@@ -521,7 +599,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
             sources[i] = old;
             const result = results.find((r) => r.id === old.id)!;
             result.outcome = "ERROR";
-            result.code = error instanceof SkilltreeError ? error.code : "SOURCE_FAILED";
+            result.code = error instanceof SkilltreeError ? error.code : sourceFailure(error);
             result.message = `Source ${old.id} changed before publication; accepted state retained`;
             if (previous.length === 1) fail(result.code, result.message);
           }

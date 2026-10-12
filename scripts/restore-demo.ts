@@ -76,7 +76,7 @@ git(repo, ["init", "-b", "main"]);
 git(repo, ["add", "--all", "--force"]);
 git(repo, ["commit", "-m", "restore fixture"]);
 restoreRunner();
-cli(["init", "--dest", dest, "--exclusive-dest"]);
+cli(["init", "--dest", dest, "--exclusive-dest", "--runtime-root", join(root, "runtime")]);
 cli(["add", repo, "--source", "upstream", "--ref", "main"]);
 cli([
   "select",
@@ -134,6 +134,8 @@ execFileSync(nodePath, [
   installer,
   "--prefix",
   standalone,
+  "--state-home",
+  home,
   "--artifact",
   artifact,
   "--sha256",
@@ -143,8 +145,8 @@ execFileSync(nodePath, [
 ]);
 const standaloneLauncher = join(standalone, "bin/skilltree");
 execFileSync(standaloneLauncher, ["doctor", "--home", home]);
-fs.rmSync(join(standalone, "dist"), { recursive: true });
-execFileSync(nodePath, [installer, "--prefix", standalone, "--restore"]);
+fs.rmSync(standalone, { recursive: true });
+execFileSync(nodePath, [installer, "--prefix", standalone, "--state-home", home, "--restore"]);
 execFileSync(standaloneLauncher, ["doctor", "--home", home]);
 console.log("standalone: digest-verified local install and excluded-runner restore passed");
 console.log(`Retained isolated restore: ${root}`);

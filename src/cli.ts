@@ -8,6 +8,7 @@ const HELP = `Skilltree — first release candidate
 Usage: skilltree <command> --home <durable-state> [options]
 
 init       --dest <shared-library> --exclusive-dest [--gardener <profile>] [--primary <profile>] [--lock-backend mkdir|flock]
+           [--adapter filesystem|grok] [--storage <path>] [--runtime-root <path>]
 add        <local-git-directory|owner/repo|https-url> --source <id> [--ref <ref>]
 inventory  <source-id>                 List normalized source projections
 select     <source-id> --path <skill-path> --id <destination-id> [--profile <profile>]
@@ -19,6 +20,9 @@ capture    <id>                        Adopt live edits into local Git history
 approve    <id> --hash <hash> --reason <review>
 apply      <id> --hash <hash>           Apply an exact approved candidate
 status | verify | doctor              Read-only state, drift and diagnostics
+configure  [--adapter grok] [--runtime-root <path>] [--storage <path>]
+migrate-storage                       Relocate report-recognized legacy backups
+compact    --caches | --scratch | --retain-backups <count> [--dry-run]
 archive                               Archive intact accepted Git histories
 restore                               Materialize verified archives; preserve old checkouts
 recover    [--unlock]                  Explicit transaction/stale-lock recovery
@@ -42,6 +46,9 @@ const commands = new Set([
   "status",
   "verify",
   "doctor",
+  "configure",
+  "migrate-storage",
+  "compact",
   "archive",
   "restore",
   "recover",
@@ -73,6 +80,12 @@ export function main(args: string[]): number {
         npx: { type: "string" },
         "lock-backend": { type: "string" },
         "host-metadata": { type: "boolean" },
+        adapter: { type: "string" },
+        storage: { type: "string" },
+        "runtime-root": { type: "string" },
+        caches: { type: "boolean" },
+        scratch: { type: "boolean" },
+        "retain-backups": { type: "string" },
       },
     });
     if (values.help || positionals.length === 0) {
@@ -94,6 +107,9 @@ export function main(args: string[]): number {
         "recover",
         "archive",
         "restore",
+        "configure",
+        "migrate-storage",
+        "compact",
       ].includes(command) &&
         positionals.length > 1)
     )
@@ -117,6 +133,17 @@ export function main(args: string[]): number {
         throw new SkilltreeError("USAGE", "Unknown lock backend");
       options.lockBackend = values["lock-backend"] as "mkdir" | "flock";
     }
+    if (values.adapter !== undefined) {
+      if (!["filesystem", "grok"].includes(values.adapter))
+        throw new SkilltreeError("USAGE", "Unknown adapter");
+      options.adapter = values.adapter as "filesystem" | "grok";
+    }
+    if (values.storage !== undefined) options.transactionStorage = values.storage;
+    if (values["runtime-root"] !== undefined) options.runtimeRoot = values["runtime-root"];
+    if (values.caches !== undefined) options.caches = values.caches;
+    if (values.scratch !== undefined) options.scratch = values.scratch;
+    if (values["retain-backups"] !== undefined)
+      options.retainBackups = Number(values["retain-backups"]);
     if (values["host-metadata"] !== undefined) options.hostMetadata = values["host-metadata"];
     if (values.dest !== undefined) options.destination = values.dest;
     if (values.install !== undefined) options.install = values.install;

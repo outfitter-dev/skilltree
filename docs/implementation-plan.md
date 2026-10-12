@@ -16,7 +16,7 @@ Scope: one usable local/shared-filesystem workflow, not a live destination integ
 
 - Native adapters: conventional `.agents/skills`, `.claude/skills`, `skills`, and local Claude plugin declarations. Cursor/ChatGPT manifest semantics are deferred and fail explicitly.
 - Optional replaceable `skills@1.7.2` CLI probe uses listing only in an isolated scratch directory. No SDK assumption; no upstream installer touches the live library.
-- Durable immutable manifest plus versioned lock, immutable content objects, acquired repos, local edit Git histories, and reports. Keep this state outside the disposable package runner.
+- Durable versioned configuration manifest plus versioned lock, immutable content objects, acquired repos, local edit Git histories, and reports. Keep this state outside the disposable package runner.
 - Stable destination-keyed Linux kernel locking with subprocess descriptor lifetime; portable directory locking for macOS/legacy state and explicit stale recovery. No automatic lock stealing.
 - Filesystem deployment requires explicit acknowledgement of coordinated exclusive destination access. It detects observed concurrent writes but cannot lock out another host writer. Grok's sanctioned write/catalog behavior remains unverified.
 - Deleting a whole selected skill is held. Three-way file deletion/rename is represented as delete/add and must reconcile without losing local content.

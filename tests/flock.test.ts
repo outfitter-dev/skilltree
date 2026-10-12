@@ -39,10 +39,12 @@ linux("kernel contention uses a stable inode and ignores TMPDIR", () => {
       expect(invoke(a).stdout.toString()).toContain("LOCKED");
       expect(invoke(b).stdout.toString()).toContain("LOCKED");
     });
-    const inode = fs.statSync(join(ctx.runtime, "kernel.lock")).ino;
+    const inode = fs.statSync(join(ctx.runtime, "sync.lock")).ino;
     expect(invoke(b).stdout.toString()).toContain("ACQUIRED");
-    expect(fs.statSync(join(ctx.runtime, "kernel.lock")).ino).toBe(inode);
-    expect(ctx.runtime).toBe(runtimePath(f.dest));
+    expect(fs.statSync(join(ctx.runtime, "sync.lock")).ino).toBe(inode);
+    expect(ctx.runtime).toBe(
+      runtimePath(f.dest, load(f.home).manifest.runtimeRoot, load(f.home).manifest.runtimeVersion),
+    );
   } finally {
     f.cleanup();
   }

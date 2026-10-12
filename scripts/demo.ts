@@ -46,7 +46,16 @@ function cli(args: string[]) {
   console.log(`${args[0]}: ${result.outcome ?? result.result?.outcome ?? "OK"}`);
   return result;
 }
-cli(["init", "--dest", dest, "--exclusive-dest"]);
+cli([
+  "init",
+  "--dest",
+  dest,
+  "--exclusive-dest",
+  "--adapter",
+  "grok",
+  "--runtime-root",
+  join(root, "runtime"),
+]);
 cli(["add", repo, "--source", "demo", "--ref", "main"]);
 cli(["inventory", "demo"]);
 cli([

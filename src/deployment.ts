@@ -1,3 +1,4 @@
+import { rememberBackup } from "./ownership";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -29,16 +30,22 @@ export function targetPath(ctx: Context, id: string): string {
 export function storageRoot(ctx: Context): string {
   const destination = ctx.manifest.destination;
   const root = assertNoSymlinks(
-    join(
-      dirname(destination),
-      `.skilltree-storage-${createHash("sha256").update(destination).digest("hex")}`,
-    ),
+    ctx.manifest.transactionStorage ??
+      join(
+        dirname(destination),
+        `.skilltree-storage-${createHash("sha256").update(destination).digest("hex")}`,
+      ),
   );
-  if (inside(ctx.home, root) || inside(root, ctx.home) || inside(destination, root))
+  if (
+    inside(ctx.home, root) ||
+    inside(root, ctx.home) ||
+    inside(destination, root) ||
+    inside(root, destination)
+  )
     fail("PATH_OVERLAP", "Transaction storage must be separate from state and catalog");
   return root;
 }
-function storage(ctx: Context, create: boolean): string {
+export function storage(ctx: Context, create: boolean): string {
   const root = storageRoot(ctx);
   const marker = join(root, "owner.json");
   if (exists(root)) {
@@ -156,6 +163,7 @@ export function applyEntry(
   fs.renameSync(p.stage, target);
   if (destinationHash(ctx, target) !== requestedHash)
     fail("DRIFT", "Destination changed during replacement; run recover");
+  rememberBackup(p.root, undefined, ctx.home);
   finish(ctx, journal);
   return {
     id: entry.id,

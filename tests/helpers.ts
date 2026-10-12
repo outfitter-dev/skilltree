@@ -26,6 +26,7 @@ export function fixture() {
     exclusive: true,
     primary: "coordinator",
     lockBackend: "mkdir",
+    runtimeRoot: join(root, "runtime"),
   });
   execute(home, "add", [repo], { source: "upstream", ref: "main" });
   return { root, repo, skill, home, dest, cleanup: () => fs.rmSync(root, { recursive: true }) };

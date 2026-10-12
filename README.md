@@ -68,11 +68,11 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 
 Keep the entire state directory, including archives, objects and local history, backed up. Manifest/lock files alone cannot recover local patches. Do not store credentials in source URLs or state. Credential-bearing HTTPS URLs are rejected; public HTTPS and local Git sources are supported.
 
-Apply stages and retains backups in owned `.skilltree-storage-<destination-hash>` storage beside the destination, outside its catalog tree and on the same filesystem. Version 1 journal-owned transactions relocate intact through a restartable location journal before recovery. Existing legacy backups remain retained; `doctor` reports them for deliberate migration. Transactions cover one skill. No backup/history garbage collector is enabled.
+Apply stages and retains backups in owned `.skilltree-storage-<destination-hash>` storage beside the destination, outside its catalog tree and on the same filesystem. Version 1 journal-owned transactions relocate intact through a restartable location journal before recovery. Completed legacy backups recognized by successful deployment reports can move intact with `migrate-storage`; unknown folders remain retained. `doctor` reports catalog-visible legacy data as errors and empty/unrecognized folders as warnings. Transactions cover one skill. No backup/history garbage collector is enabled.
 
-New Linux collections use util-linux `flock` on a stable destination-keyed inode under canonical `/tmp/skilltree-runtime`, independent of `TMPDIR`. Git children inherit the lock descriptor, retaining exclusion if they outlive the parent. Kernel locks release on final descriptor closure. macOS and legacy collections use explicit stale-recovered directory locking; `init --lock-backend mkdir|flock` chooses the backend. Stop older versions before upgrading locking domains. Runtime directory deletion while writers run invalidates coordination; platform lifetime still needs host verification. These locks coordinate Skilltree writers, not host applications.
+New Linux collections use util-linux `flock` on a stable destination-keyed `sync.lock` under `~/.local/state/skilltree`, independent of `TMPDIR`. `--runtime-root` chooses an explicit coordinated domain; tests and demos keep it inside their own fixture. Git children inherit the lock descriptor, retaining exclusion if they outlive the parent. Kernel locks release on final descriptor closure. macOS and legacy collections use explicit stale-recovered directory locking; `init --lock-backend mkdir|flock` chooses the backend. Stop older versions before upgrading locking domains. Runtime directory deletion while writers run invalidates coordination; platform lifetime still needs host verification. These locks coordinate Skilltree writers, not host applications.
 
-Use `init --host-metadata` only when the host owns root `workflow.md` and `runs.json`. These regular files are excluded from skill hashes/capture and preserved through replacement and backups. Skill-authored reserved names remain rejected; unowned host directories are never adopted. Other host files or symlinks hold for explicit adapter reconciliation.
+Use `init --adapter grok` for the isolated Grok filesystem preservation policy, which defaults ownership of root `workflow.md` and `runs.json`. Existing collections migrate with `configure --adapter grok`; plain filesystem collections can opt in with `configure --host-metadata`. An unsupported destination tree holds its affected skill rather than aborting other healthy selections. These regular files are excluded from skill hashes/capture and preserved through replacement and backups. Skill-authored reserved names remain rejected; unowned host directories are never adopted. Other host files or symlinks hold for explicit adapter reconciliation.
 
 ```sh
 bun run dev -- doctor --home /absolute/collection
@@ -98,6 +98,24 @@ bun run dev -- archive --home /absolute/collection
 bun run dev -- restore --home /absolute/collection --dry-run
 bun run dev -- restore --home /absolute/collection
 ```
+
+## Configuration and explicit maintenance
+
+Resolve and verify destination aliases with `realpath` before initialization; Skilltree requires the canonical path and does not bypass symlink checks. `--storage` chooses a writable transaction root outside state and the catalog, on the same filesystem. The Grok adapter here implements filesystem preservation; sanctioned catalog refresh, host writers and Computer Update remain separate host integration contracts.
+
+```sh
+bun run dev -- configure --home /absolute/collection --adapter grok --dry-run
+bun run dev -- configure --home /absolute/collection --adapter grok
+bun run dev -- migrate-storage --home /absolute/collection --dry-run
+bun run dev -- migrate-storage --home /absolute/collection
+bun run dev -- compact --home /absolute/collection --retain-backups 2 --caches --scratch --dry-run
+```
+
+Actual compaction requires the same explicit policy without `--dry-run`. It retains the latest requested count of verified backups, preserves changed/unknown backups, and reclaims proven inactive generated cache files backed by validated archives. Git packing under `--caches` preserves the complete object set and refs. Older cache objects can be reclaimed after archive comparison while unproven refs/configuration/logs remain. Immutable archives and approval history are never garbage-collected. Unique history and unknown work can still grow; no global disk cap is promised. This command is not scheduled automatically and no real-user retention policy is installed.
+
+Stale scratch cleanup requires a proven exited owner and matching file records. Unknown/partial scratch material holds. Runtime migration records and holds the prior lock domain; stop older writers before migration. Older schemas reject upgraded manifests, and compatible kernel writers contend on the preserved previous inode. Unsupported directory/kernel mixing holds rather than stealing a lock.
+
+`doctor` suggests `restore --dry-run` when the corresponding archive validates. Source errors distinguish network, authentication, reference, unavailable repository, timeout, I/O and validation causes without echoing raw diagnostics or credentials.
 
 ## Source adapters
 
@@ -131,12 +149,12 @@ The Node launcher selects a prepared matching native binary when present, otherw
 A standalone local install needs an approved portable artifact, its SHA256 and an explicit supported Node executable. It downloads nothing and installs no service or hook:
 
 ```sh
-node bin/install.mjs --prefix /absolute/runner --artifact /absolute/approved-cli.mjs --sha256 <reviewed-sha256> --node /absolute/node
+node bin/install.mjs --prefix /absolute/runner --state-home /absolute/collection --artifact /absolute/approved-cli.mjs --sha256 <reviewed-sha256> --node /absolute/node
 /absolute/runner/bin/skilltree --help
-node bin/install.mjs --prefix /absolute/runner --restore
+node bin/install.mjs --prefix /absolute/runner --state-home /absolute/collection --restore
 ```
 
-The receipt and verified artifact are durable; `dist/` is derived. Restoration refuses unknown changed bytes. A missing build or runner exits nonzero.
+With `--state-home`, the receipt and verified artifact live in separate durable state, so loss of the entire runner prefix can be restored. Legacy prefix-local receipts remain supported but cannot survive prefix loss. The installer validates every planned destination before any write; `dist/` is derived. Restoration refuses unknown changed bytes. A missing build or runner exits nonzero.
 
 ## Development and scope
 

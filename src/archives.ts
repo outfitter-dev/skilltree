@@ -1,3 +1,4 @@
+import { rememberIntent, rememberMaterialization } from "./ownership";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -98,7 +99,7 @@ export function archiveRepository(
   else atomicJson(path, value);
   return key;
 }
-function readArchive(home: string, key: string): Archive {
+export function readArchive(home: string, key: string): Archive {
   hash.parse(key);
   const path = assertNoSymlinks(join(home, "archives", `${key}.json`));
   if (!exists(path))
@@ -132,6 +133,7 @@ export function materialize(
     fail("ARCHIVE_MISMATCH", "Archive differs from accepted provenance");
   assertNoSymlinks(root);
   fs.mkdirSync(root);
+  rememberIntent(home, root, key);
   git(root, [
     "init",
     "-b",
@@ -167,6 +169,7 @@ export function materialize(
   git(root, ["checkout", "--detach", revision]);
   if (repository) git(root, ["remote", "add", "origin", repository]);
   else git(root, ["checkout", "-B", "skilltree-local", revision]);
+  rememberMaterialization(home, root, key);
 }
 // Retire only exact generated tracked bytes after state publication. Durable
 // objects/history remain archived; unknown files and all Git metadata are retained.

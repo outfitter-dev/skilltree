@@ -104,7 +104,12 @@ export const manifestSchema = z
   .object({
     version: z.literal(1),
     destination: z.string().min(1),
-    adapter: z.literal("filesystem"),
+    adapter: z.enum(["filesystem", "grok"]),
+    transactionStorage: z.string().min(1).optional(),
+    runtimeRoot: z.string().min(1).optional(),
+    runtimeVersion: z.literal(2).optional(),
+    legacyRuntime: z.string().optional(),
+    legacyLockName: z.enum(["kernel.lock", "sync.lock"]).optional(),
     lockBackend: z.enum(["mkdir", "flock"]).optional(),
     hostMetadata: z.array(z.enum(["workflow.md", "runs.json"])).optional(),
     exclusiveDestination: z.literal(true),
