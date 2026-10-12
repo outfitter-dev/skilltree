@@ -85,6 +85,8 @@ export interface WorkflowEvidence {
   repository: { full_name: string };
   head_repository: { full_name: string };
   display_title?: string;
+  run_started_at?: string;
+  updated_at?: string;
 }
 export interface ExpectedCheck {
   sha: string;
@@ -111,7 +113,13 @@ export function workflowPassed(runs: WorkflowEvidence[], expected: ExpectedCheck
       (!expected.created || Date.parse(r.created_at) >= Date.parse(expected.created)) &&
       (!expected.merged || Date.parse(r.created_at) <= Date.parse(expected.merged)),
   );
-  const latest = eligible.sort((a, b) => b.id - a.id || b.run_attempt - a.run_attempt)[0];
+  // GitHub updates run_started_at for each rerun, including its queued phase,
+  // while retaining the original run ID and created_at. Completion time must
+  // not let an older execution hide a newer failed or pending attempt.
+  const started = (run: WorkflowEvidence) => Date.parse(run.run_started_at ?? run.created_at);
+  const latest = eligible.sort(
+    (a, b) => started(b) - started(a) || b.id - a.id || b.run_attempt - a.run_attempt,
+  )[0];
   return latest?.status === "completed" && latest.conclusion === "success";
 }
 export function hasChangelogHeading(text: string, version: string): boolean {

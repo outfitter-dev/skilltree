@@ -332,3 +332,56 @@ test("generated version checks use a scoped read-only dispatch without a new cre
   expect(release.jobs.version.permissions.actions).toBe("write");
   expect(release.jobs.publish.if).toContain("github.ref == 'refs/heads/main'");
 });
+
+test("latest execution governs reruns across PR and dispatched checks", () => {
+  const versionExpected = { ...expected, versionPr: 4 };
+  const first = {
+    ...historic,
+    run_started_at: "2026-10-01T12:00:00Z",
+    updated_at: "2026-10-01T12:02:00Z",
+  };
+  const newerFailure = {
+    ...historic,
+    id: 13,
+    event: "workflow_dispatch",
+    display_title: versionCiTitle(4, historic.head_sha),
+    run_started_at: "2026-10-01T12:10:00Z",
+    updated_at: "2026-10-01T12:12:00Z",
+    conclusion: "failure",
+  };
+  const rerun = {
+    ...first,
+    run_attempt: 2,
+    run_started_at: "2026-10-01T12:20:00Z",
+    updated_at: "2026-10-01T12:22:00Z",
+  };
+  expect(workflowPassed([newerFailure, rerun], versionExpected)).toBe(true);
+  expect(
+    workflowPassed(
+      [newerFailure, { ...rerun, status: "queued", conclusion: null }],
+      versionExpected,
+    ),
+  ).toBe(false);
+  expect(
+    workflowPassed(
+      [newerFailure, { ...rerun, status: "in_progress", conclusion: null }],
+      versionExpected,
+    ),
+  ).toBe(false);
+  expect(
+    workflowPassed(
+      [newerFailure, { ...first, updated_at: "2026-10-01T12:30:00Z" }],
+      versionExpected,
+    ),
+  ).toBe(false);
+  expect(
+    workflowPassed(
+      [
+        { ...newerFailure, status: "in_progress", conclusion: null },
+        { ...first, updated_at: "2026-10-01T12:30:00Z" },
+      ],
+      versionExpected,
+    ),
+  ).toBe(false);
+  expect(workflowPassed([{ ...newerFailure, event: "pull_request" }, rerun], expected)).toBe(true);
+});
