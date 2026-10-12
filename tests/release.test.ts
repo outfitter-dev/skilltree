@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 import {
   evaluateRelease,
@@ -328,7 +329,9 @@ test("generated version checks use a scoped read-only dispatch without a new cre
   const guard = check.jobs["linux-node20"].steps.find(
     (s: { run?: string }) => s.run === "bun scripts/version-ci.ts",
   );
-  expect(guard.if).toContain("github.ref == 'refs/heads/changeset-release/main'");
+  expect(guard.if).toBe(
+    "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/changeset-release/main'",
+  );
   expect(release.jobs.version.permissions.actions).toBe("write");
   expect(release.jobs.publish.if).toContain("github.ref == 'refs/heads/main'");
 });
@@ -384,4 +387,22 @@ test("latest execution governs reruns across PR and dispatched checks", () => {
     ),
   ).toBe(false);
   expect(workflowPassed([{ ...newerFailure, event: "pull_request" }, rerun], expected)).toBe(true);
+});
+
+test("a version-branch dispatch without a PR number fails before any identity lookup", () => {
+  const result = spawnSync(process.execPath, ["scripts/version-ci.ts"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_REF: "refs/heads/changeset-release/main",
+      GITHUB_REPOSITORY: "outfitter-dev/skilltree",
+      SKILLTREE_VERSION_PR: "",
+      SKILLTREE_VERSION_SHA: "a".repeat(40),
+      GITHUB_SHA: "a".repeat(40),
+    },
+  });
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("Generated version CI identity validation failed");
 });
