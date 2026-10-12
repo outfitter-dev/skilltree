@@ -195,7 +195,10 @@ export function main(args: string[]): number {
       JSON.stringify({
         outcome: code,
         message,
-        events: [{ version: 1, type: "operation.error", command: args[0] ?? null, code, message }],
+        events: [
+          { version: 1, type: "operation.error", command: args[0] ?? null, code, message },
+          ...(error instanceof SkilltreeError ? error.events : []),
+        ],
       }),
     );
     return code === "USAGE" ? 2 : 1;

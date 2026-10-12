@@ -7,7 +7,7 @@ import { execute } from "../src/service";
 import { load, save } from "../src/state";
 import { fixture, install, editBody, commit, authoritative } from "./helpers";
 
-test("unsupported upstream validation leaves accepted sources intact and corrected sync retries", () => {
+test("invalid upstream skills retain accepted skill histories and corrected sync retries", () => {
   const f = fixture();
   try {
     install(f.home);
@@ -22,17 +22,27 @@ test("unsupported upstream validation leaves accepted sources intact and correct
       ),
     );
     commit(f.repo, "unsupported dependency");
-    for (const dryRun of [true, false]) {
-      expect(() => execute(f.home, "sync", [], { dryRun })).toThrow(
-        expect.objectContaining({ code: "UNSUPPORTED_DEPENDENCY" }),
-      );
-      expect(authoritative(f.home)).toBe(before);
-      expect(git(sourcePath(f.home, accepted), ["rev-parse", "HEAD"])).toBe(accepted.revision);
-    }
+    const originalEntry = load(f.home).lock.entries[0]!;
+    const dry = execute(f.home, "sync", [], { dryRun: true });
+    expect(dry).toMatchObject({
+      outcome: "ERROR",
+      dryRun: true,
+      sources: [{ holds: [{ code: "UNSUPPORTED_DEPENDENCY", path: ".agents/skills/helper" }] }],
+    });
+    expect(authoritative(f.home)).toBe(before);
+    execute(f.home, "sync", []);
+    expect(load(f.home).lock.entries[0]).toEqual({
+      ...originalEntry,
+      candidate: null,
+      outcome: "HELD",
+      reasons: expect.any(Array),
+    });
+    expect(git(sourcePath(f.home, accepted), ["rev-parse", "HEAD"])).toBe(accepted.revision);
+    const heldState = authoritative(f.home);
     fs.writeFileSync(join(f.skill, "SKILL.md"), original + "\nFixed upstream\n");
     commit(f.repo, "fixed dependency");
     expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({ outcome: "DRY_RUN" });
-    expect(authoritative(f.home)).toBe(before);
+    expect(authoritative(f.home)).toBe(heldState);
     execute(f.home, "sync", []);
     const current = load(f.home).lock.sources[0]!;
     expect(current.revision).toBe(git(f.repo, ["rev-parse", "HEAD"]));
@@ -321,12 +331,19 @@ for (const [name, target] of [
       fs.symlinkSync(target!, join(f.skill, name!));
       commit(f.repo, "unsupported selected skill link");
       const before = authoritative(f.home);
-      for (const dryRun of [true, false]) {
-        expect(() => execute(f.home, "sync", [], { dryRun })).toThrow(
-          expect.objectContaining({ code: "UNSAFE_TREE" }),
-        );
-        expect(authoritative(f.home)).toBe(before);
-      }
+      const previous = load(f.home).lock.entries[0]!;
+      expect(execute(f.home, "sync", [], { dryRun: true })).toMatchObject({
+        outcome: "ERROR",
+        sources: [{ holds: [{ path: ".agents/skills/helper", code: "UNSAFE_TREE" }] }],
+      });
+      expect(authoritative(f.home)).toBe(before);
+      execute(f.home, "sync", []);
+      expect(load(f.home).lock.entries[0]).toEqual({
+        ...previous,
+        candidate: null,
+        outcome: "HELD",
+        reasons: expect.any(Array),
+      });
       execute(f.home, "add", [f.repo], { source: "unsafe", ref: "main" });
       expectRepositoryLinks(
         sourcePath(f.home, load(f.home).lock.sources.find((s) => s.id === "unsafe")!),

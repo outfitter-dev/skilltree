@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join, resolve, relative, isAbsolute, parse } from "node:path";
-import { fail, treeSchema, type Tree } from "./model";
+import { fail, relativePath, treeSchema, type Tree } from "./model";
 
 export function exists(path: string): boolean {
   try {
@@ -76,6 +76,8 @@ export function readTree(
       const rel = prefix ? `${prefix}/${name}` : name;
       if ([".git", "node_modules", "workflow.md", "runs.json"].includes(name))
         fail("RESERVED_FILE", `Unsupported reserved path: ${rel}`);
+      if (!relativePath.safeParse(rel).success)
+        fail("UNSAFE_TREE", `Unsupported skill file path: ${rel}`);
       const stat = fs.lstatSync(path);
       if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()))
         fail("UNSAFE_TREE", `Symlink or special file: ${rel}`);
@@ -85,8 +87,9 @@ export function readTree(
       }
       bytes += stat.size;
       count++;
-      if (stat.size > 10_000_000 || bytes > 50_000_000 || count > 5000)
-        fail("TREE_LIMIT", "Skill exceeds file/size limits");
+      if (stat.size > 10_000_000) fail("TREE_LIMIT", `Skill file exceeds 10,000,000 bytes: ${rel}`);
+      if (bytes > 50_000_000) fail("TREE_LIMIT", `Skill exceeds 50,000,000 total bytes at: ${rel}`);
+      if (count > 5000) fail("TREE_LIMIT", `Skill exceeds 5,000 files at: ${rel}`);
       tree[rel] = {
         data: fs.readFileSync(path).toString("base64"),
         executable: (stat.mode & 0o111) !== 0,

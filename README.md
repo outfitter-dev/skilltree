@@ -4,7 +4,9 @@ Skilltree synchronizes selected skills from Git repositories into one shared lib
 
 ## Status
 
-`0.1.0-rc.0` is a local release candidate, not a published npm release. The filesystem workflow is implemented and tested in isolated fixtures. Live Grok deployment, host catalog pickup, and Cursor/ChatGPT plugin ingestion remain unverified or unsupported.
+`@outfitter/skilltree@0.1.0-rc.0` is the initial published npm release candidate. The filesystem workflow is implemented and tested in isolated fixtures. Live Grok deployment, host catalog pickup, and Cursor/ChatGPT plugin ingestion remain unverified or unsupported.
+
+The source checkout includes follow-up fixes for isolated discovery holds and large-file validation that await the next candidate; the published `0.1.0-rc.0` does not include them.
 
 The CLI provides Git acquisition, normalized inventory, explicit selection, shared profile assignments, local-edit capture, three-way reconciliation, staging, exact-hash approval, apply, verification, diagnostics, and interrupted-replacement recovery. `sync` stages only; it never grants approval or deploys automatically.
 
@@ -87,7 +89,9 @@ All state-writing commands have `--dry-run`. Dry capture/apply perform the same 
 
 ## Source failures, events and restoration
 
-Sync isolates acquisition/validation failures by source. Successful source observations and their skill candidates publish together in one atomic lock update; failed sources keep their prior source and skill records. Deployment remains per skill and requires explicit approval/apply. JSON reports expose named source errors and versioned `skill.held`, `skill.conflict`, `skill.drift` and `source.error` events. CLI operation failures emit `operation.error`; integrations can consume these records without Skilltree sending messages. A partial real sync exits nonzero. Single-source errors preserve their established error codes and identify the source.
+Inventory reports supported skills alongside `holds` containing a source-relative `path`, `scope`, `code` and `message`. Invalid skill file sets and unsafe or unsupported projections remain excluded; healthy supported projections from the same repository remain selectable. Inventory exits nonzero with `PARTIAL` when healthy skills coexist with holds, or `ERROR` when none remain. Selecting a held path fails with its precise code and a path-bearing event.
+
+Sync isolates acquisition and source-root validation failures by source. Invalid selected skill content clears only its candidate, retaining accepted upstream/local history, historical approvals and deployed bytes. Healthy peers still stage. Unsupported manifests remain explicit projection holds; their semantics are never interpreted. Successful source observations and their skill candidates publish together in one atomic lock update; failed sources keep their prior source and skill records. Deployment remains per skill and requires explicit approval/apply. JSON reports expose path-bearing holds, named source errors and versioned `projection.held`, `skill.held`, `skill.conflict`, `skill.drift` and `source.error` events. CLI operation failures emit `operation.error`; integrations can consume these records without Skilltree sending messages. Failed dry and real syncs exit nonzero with `PARTIAL` or `ERROR`; dry sync includes `dryRun: true` and retains the same no-authoritative-write guarantees. A successful preview returns `DRY_RUN`. Single-source errors preserve their established error codes and identify the source.
 
 Sources record observed fetched revisions; each skill records accepted reconciliation, local base, approval and deployment separately. A conflict can retain its older accepted skill revision while the source observation advances. That distinction never authorizes deployment.
 
@@ -138,7 +142,7 @@ Stale scratch cleanup requires a proven exited owner and matching file records. 
 
 Native inventory supports `.agents/skills`, `.claude/skills`, `skills/`, and local paths declared by `.claude-plugin/plugin.json`. Competing same-name projections remain separate; inventory identifies byte-equivalent copies and ambiguity, and selection always names an exact path. No traversal-order union or runtime-plugin compatibility is implied.
 
-Cursor/ChatGPT manifests and marketplaces fail explicitly until adapters are verified. Symlinks, special files, nested repositories, `node_modules`, legacy `workflow.md`, and `runs.json` are rejected inside skill file sets. Empty directories, ownership, ACLs, and directory permissions are not content; deployed files normalize to 0644 or 0755. Selected skill removal is held; file rename is delete/add. External dependency declarations and missing/outside inline Markdown references are rejected. Arbitrary script imports and all runtime dependencies cannot be statically proven; review remains necessary.
+Cursor/Codex/ChatGPT manifests and marketplaces are held explicitly as unsupported projections until adapters are verified. Their presence does not block conventional supported skill folders. Symlinks, special files, nested repositories, `node_modules`, legacy `workflow.md`, and `runs.json` are rejected inside skill file sets. Empty directories, ownership, ACLs, and directory permissions are not content; deployed files normalize to 0644 or 0755. Selected skill removal is held; file rename is delete/add. External dependency declarations and missing/outside inline Markdown references are rejected. Arbitrary script imports and all runtime dependencies cannot be statically proven; review remains necessary.
 
 The optional replaceable probe invokes pinned [`skills@1.7.2`](https://github.com/vercel-labs/skills/blob/main/package.json) with listing only, in isolated scratch/cache directories:
 
@@ -161,7 +165,7 @@ npx --yes --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
 bunx --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
 ```
 
-The Node launcher selects a prepared matching native binary when present, otherwise the bundled Node CLI. The npm tarball includes only the portable Node bundle; native binaries remain optional checkout/standalone artifacts. Build the portable bundle before staging a package. Build artifacts are disposable; `--home` always supplies durable state. Git remains an external prerequisite. The accepted local milestone was verified on Node 20.19.2/macOS arm64. The separate assessment workflow tests Linux x64 portable/native execution and isolated runner restore. These are compatibility fixtures; no Grok host or universal runtime guarantee is made. Public package metadata and release automation are prepared; registry availability must be verified before advertising an npm release. Direct source-checkout publication is blocked in favor of the reviewed release workflow. See [package releases](docs/releases.md).
+The Node launcher selects a prepared matching native binary when present, otherwise the bundled Node CLI. The npm tarball includes only the portable Node bundle; native binaries remain optional checkout/standalone artifacts. Build the portable bundle before staging a package. Build artifacts are disposable; `--home` always supplies durable state. Git remains an external prerequisite. The accepted local milestone was verified on Node 20.19.2/macOS arm64. The separate assessment workflow tests Linux x64 portable/native execution and isolated runner restore. These are compatibility fixtures; no Grok host or universal runtime guarantee is made. The initial candidate is published; registry availability of later versions must be verified before advertising them. Direct source-checkout publication is blocked in favor of the reviewed release workflow. See [package releases](docs/releases.md).
 
 A standalone local install needs an approved portable artifact, its SHA256 and an explicit supported Node executable. It downloads nothing and installs no service or hook:
 
