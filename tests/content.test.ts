@@ -56,17 +56,22 @@ test("duplicate projections are preserved and marked equivalent or ambiguous", (
   try {
     const duplicate = join(f.repo, "skills/other");
     fs.cpSync(f.skill, duplicate, { recursive: true });
-    let items = discover(f.repo);
+    let items = discover(f.repo).skills;
     expect(items).toHaveLength(2);
     expect(items[0]!.equivalentPaths).toHaveLength(1);
     expect(items[0]!.ambiguous).toBe(false);
     fs.appendFileSync(join(duplicate, "SKILL.md"), "Different\n");
-    items = discover(f.repo);
+    items = discover(f.repo).skills;
     expect(items[0]!.ambiguous).toBe(true);
     expect(items[0]!.equivalentPaths).toHaveLength(0);
     fs.mkdirSync(join(f.repo, ".cursor-plugin"));
     fs.writeFileSync(join(f.repo, ".cursor-plugin/plugin.json"), "{}");
-    expect(() => discover(f.repo)).toThrow("requires an adapter");
+    expect(discover(f.repo)).toMatchObject({
+      skills: expect.any(Array),
+      holds: [
+        { path: ".cursor-plugin/plugin.json", scope: "projection", code: "UNSUPPORTED_FORMAT" },
+      ],
+    });
   } finally {
     f.cleanup();
   }
@@ -78,9 +83,13 @@ test("local Claude plugin declarations include support files and reject escape p
     fs.cpSync(f.skill, join(f.repo, "custom/helper"), { recursive: true });
     const manifest = join(f.repo, ".claude-plugin/plugin.json");
     fs.writeFileSync(manifest, JSON.stringify({ skills: ["./custom/helper"] }));
-    expect(discover(f.repo).find((s) => s.path === "custom/helper")?.format).toBe("claude-plugin");
+    expect(discover(f.repo).skills.find((s) => s.path === "custom/helper")?.format).toBe(
+      "claude-plugin",
+    );
     fs.writeFileSync(manifest, JSON.stringify({ skills: ["./../outside"] }));
-    expect(() => discover(f.repo)).toThrow();
+    expect(discover(f.repo).holds).toContainEqual(
+      expect.objectContaining({ path: ".claude-plugin/plugin.json", code: "INVALID_PLUGIN" }),
+    );
   } finally {
     f.cleanup();
   }
@@ -115,11 +124,15 @@ test("external dependencies and missing/outside support references fail clearly"
         "description: Fixture helper\ndependencies: [external]",
       ),
     );
-    expect(() => discover(f.repo)).toThrow("dependency");
+    expect(discover(f.repo).holds).toContainEqual(
+      expect.objectContaining({ path: ".agents/skills/helper", code: "UNSUPPORTED_DEPENDENCY" }),
+    );
     fs.writeFileSync(file, initial + "\n[missing](../outside.md)\n");
-    expect(() => discover(f.repo)).toThrow("complete skill file set");
+    expect(discover(f.repo).holds).toContainEqual(
+      expect.objectContaining({ path: ".agents/skills/helper", code: "MISSING_REFERENCE" }),
+    );
     fs.writeFileSync(file, initial + "\n[script](scripts/run.sh)\n");
-    expect(discover(f.repo)).toHaveLength(1);
+    expect(discover(f.repo).skills).toHaveLength(1);
   } finally {
     f.cleanup();
   }

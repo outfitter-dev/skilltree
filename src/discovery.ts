@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { join, relative, resolve, dirname, posix } from "node:path";
 import { parseDocument } from "yaml";
 import { z } from "zod";
-import { fail, relativePath, type Tree } from "./model";
+import { fail, relativePath, SkilltreeError, type Tree } from "./model";
 import { assertNoSymlinks, exists, inside, readTree, treeHash } from "./files";
 
 export interface Skill {
@@ -14,16 +14,38 @@ export interface Skill {
   equivalentPaths: string[];
   ambiguous: boolean;
 }
+export interface Hold {
+  path: string;
+  scope: "skill" | "projection";
+  code: string;
+  message: string;
+  declaration?: string;
+}
+export interface Discovery {
+  skills: Skill[];
+  holds: Hold[];
+}
 export function metadata(root: string): { name: string; description: string } {
   return metadataTree(readTree(root));
 }
 export function metadataTree(tree: Tree): { name: string; description: string } {
-  const text = Buffer.from(tree["SKILL.md"]!.data, "base64").toString("utf8");
+  if (!tree["SKILL.md"]) fail("INVALID_SKILL", "Skill root must contain SKILL.md");
+  const text = Buffer.from(tree["SKILL.md"].data, "base64").toString("utf8");
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
   if (!match) fail("INVALID_SKILL", "SKILL.md requires YAML name and description frontmatter");
-  const doc = parseDocument(match[1]!, { uniqueKeys: true });
-  if (doc.errors.length) fail("INVALID_SKILL", "Invalid or duplicate YAML frontmatter keys");
-  const frontmatter = doc.toJS({ maxAliasCount: 20 }) as Record<string, unknown>;
+  let frontmatter: Record<string, unknown>;
+  try {
+    const doc = parseDocument(match[1]!, { uniqueKeys: true });
+    if (doc.errors.length) fail("INVALID_SKILL", "Invalid or duplicate YAML frontmatter keys");
+    frontmatter = doc.toJS({ maxAliasCount: 20 }) as Record<string, unknown>;
+  } catch {
+    return fail("INVALID_SKILL", "Invalid or duplicate YAML frontmatter keys");
+  }
+  const meta = z
+    .object({ name: z.string().min(1).max(200), description: z.string().min(1).max(4000) })
+    .safeParse(frontmatter);
+  if (!meta.success)
+    fail("INVALID_SKILL", "SKILL.md requires valid name and description frontmatter");
   if (frontmatter.dependencies || frontmatter.requires)
     fail("UNSUPPORTED_DEPENDENCY", "External dependency declarations need a verified adapter");
   for (const [path, file] of Object.entries(tree)) {
@@ -36,7 +58,7 @@ export function metadataTree(tree: Tree): { name: string; description: string } 
       try {
         link = decodeURIComponent(raw.split("#")[0]!);
       } catch {
-        return fail("INVALID_REFERENCE", "Malformed local reference");
+        return fail("INVALID_REFERENCE", `Malformed local reference: ${path}`);
       }
       const target = posix.normalize(posix.join(dirname(path), link));
       if (!link || !tree[target] || link.startsWith("/") || target.startsWith("../"))
@@ -46,71 +68,122 @@ export function metadataTree(tree: Tree): { name: string; description: string } 
         );
     }
   }
-  return z
-    .object({ name: z.string().min(1).max(200), description: z.string().min(1).max(4000) })
-    .parse(frontmatter);
+  return meta.data;
 }
-export function discover(root: string): Skill[] {
+export function discover(root: string): Discovery {
+  // The acquired root is a source-wide safety boundary. Only known projection
+  // validation failures below it are isolated; I/O and unexpected failures abort.
   assertNoSymlinks(root);
-  for (const unsupported of [
+  const holds: Hold[] = [];
+  const found = new Map<string, Skill>();
+  const scanned = new Set<string>();
+  function checked(path: string, scope: Hold["scope"], work: () => void, declaration?: string) {
+    try {
+      work();
+    } catch (error) {
+      if (!(error instanceof SkilltreeError)) throw error;
+      holds.push({
+        path,
+        scope,
+        code: error.code,
+        message: declaration ? `${declaration}: ${error.message}` : error.message,
+        ...(declaration ? { declaration } : {}),
+      });
+    }
+  }
+  for (const path of [
     ".cursor-plugin/plugin.json",
     ".codex-plugin/plugin.json",
     ".chatgpt-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
   ]) {
-    if (exists(join(root, unsupported)))
-      fail(
-        "UNSUPPORTED_FORMAT",
-        `${unsupported} requires an adapter whose manifest semantics have been verified`,
-      );
+    if (exists(join(root, path)))
+      holds.push({
+        path,
+        scope: "projection",
+        code: "UNSUPPORTED_FORMAT",
+        message: `${path} requires an adapter whose manifest semantics have been verified`,
+      });
   }
-  const found = new Map<string, Skill>();
   function scan(dir: string, format: string) {
-    if (!exists(dir)) return;
-    assertNoSymlinks(dir);
-    if (!inside(root, dir)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
-    if (exists(join(dir, "SKILL.md"))) {
-      const path = relativePath.parse(relative(root, dir));
-      if (!found.has(path)) {
-        const meta = metadata(dir);
-        found.set(path, {
-          path,
-          ...meta,
-          format,
-          hash: treeHash(readTree(dir)),
-          equivalentPaths: [],
-          ambiguous: false,
+    const path = relative(root, dir);
+    // Conventional roots and Claude plugin paths can name the same tree.
+    // Repeating the walk would record failed skills and symlink holds twice.
+    if (scanned.has(path)) return;
+    scanned.add(path);
+    checked(path, "projection", () => {
+      if (!inside(root, dir)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
+      assertNoSymlinks(dir);
+      if (!exists(dir)) return;
+      if (!fs.statSync(dir).isDirectory())
+        fail("UNSAFE_TREE", "Skill projection is not a directory");
+      if (exists(join(dir, "SKILL.md"))) {
+        checked(path, "skill", () => {
+          if (!relativePath.safeParse(path).success) fail("UNSAFE_PATH", "Unsupported skill path");
+          if (!found.has(path)) {
+            const tree = readTree(dir);
+            found.set(path, {
+              path,
+              ...metadataTree(tree),
+              format,
+              hash: treeHash(tree),
+              equivalentPaths: [],
+              ambiguous: false,
+            });
+          }
         });
+        return;
       }
-      return;
-    }
-    for (const entry of fs
-      .readdirSync(dir, { withFileTypes: true })
-      .sort((a, b) => a.name.localeCompare(b.name))) {
-      if (entry.isSymbolicLink()) fail("UNSAFE_TREE", "Symlink in skill discovery tree");
-      if (entry.isDirectory() && ![".git", "node_modules"].includes(entry.name))
-        scan(join(dir, entry.name), format);
-    }
+      for (const entry of fs
+        .readdirSync(dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name))) {
+        if (entry.isSymbolicLink()) {
+          holds.push({
+            path: relative(root, join(dir, entry.name)),
+            scope: "projection",
+            code: "UNSAFE_TREE",
+            message: "Symlink in skill discovery tree",
+          });
+        } else if (entry.isDirectory() && ![".git", "node_modules"].includes(entry.name))
+          scan(join(dir, entry.name), format);
+      }
+    });
   }
   for (const path of [".agents/skills", ".claude/skills", "skills"])
     scan(join(root, path), "plain");
-  const plugin = join(root, ".claude-plugin/plugin.json");
+  const pluginPath = ".claude-plugin/plugin.json";
+  const plugin = join(root, pluginPath);
   if (exists(plugin)) {
-    assertNoSymlinks(plugin);
-    const config = z
-      .object({ skills: z.array(z.string()).optional() })
-      .parse(JSON.parse(fs.readFileSync(plugin, "utf8")));
-    for (const path of config.skills ?? ["./skills"]) {
-      if (!path.startsWith("./")) fail("INVALID_PLUGIN", "Claude skill paths must start with ./");
-      const target = resolve(root, relativePath.parse(path.slice(2)));
-      if (!inside(root, target)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
-      scan(target, "claude-plugin");
-    }
+    checked(pluginPath, "projection", () => {
+      assertNoSymlinks(plugin);
+      let config: { skills?: string[] | undefined };
+      try {
+        config = z
+          .object({ skills: z.array(z.string()).optional() })
+          .parse(JSON.parse(fs.readFileSync(plugin, "utf8")));
+      } catch (error) {
+        if (!(error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
+        return fail("INVALID_PLUGIN", "Invalid Claude plugin skill declarations");
+      }
+      for (const [index, path] of (config.skills ?? ["./skills"]).entries()) {
+        checked(
+          pluginPath,
+          "projection",
+          () => {
+            if (!path.startsWith("./") || !relativePath.safeParse(path.slice(2)).success)
+              fail(
+                "INVALID_PLUGIN",
+                "Claude skill paths must be safe source-relative paths starting with ./",
+              );
+            const target = resolve(root, path.slice(2));
+            if (!inside(root, target)) fail("UNSAFE_PATH", "Plugin skill path escapes source");
+            scan(target, "claude-plugin");
+          },
+          `skills[${index}]`,
+        );
+      }
+    });
   }
-  if (exists(join(root, ".claude-plugin/marketplace.json")))
-    fail(
-      "UNSUPPORTED_FORMAT",
-      "Marketplace ingestion is deferred; add individual plugin repositories",
-    );
   const skills = [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
   for (const skill of skills) {
     const peers = skills.filter((other) => other.name === skill.name && other.path !== skill.path);
@@ -119,5 +192,26 @@ export function discover(root: string): Skill[] {
       .map((other) => other.path);
     skill.ambiguous = peers.some((other) => other.hash !== skill.hash);
   }
-  return skills;
+  return { skills, holds: holds.sort((a, b) => a.path.localeCompare(b.path)) };
+}
+export function selectedHold(
+  discovery: Discovery,
+  path: string,
+  acceptedSelection = false,
+): Hold | undefined {
+  const direct = discovery.holds.find(
+    (hold) => path === hold.path || path.startsWith(hold.path + "/"),
+  );
+  if (direct) return direct;
+  // Only an established custom selection provides evidence of prior plugin
+  // discovery. An unrelated absent new selector must remain NOT_FOUND.
+  if (
+    !acceptedSelection ||
+    discovery.skills.some((skill) => skill.path === path) ||
+    [".agents/skills", ".claude/skills", "skills"].some(
+      (root) => path === root || path.startsWith(root + "/"),
+    )
+  )
+    return undefined;
+  return discovery.holds.find((hold) => hold.path === ".claude-plugin/plugin.json");
 }

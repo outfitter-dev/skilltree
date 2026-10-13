@@ -68,9 +68,13 @@ test("explicit host metadata survives capture, updates and replacement outside s
     expect(execute(f.home, "doctor", [])).toMatchObject({ outcome: "OK" });
     fs.writeFileSync(join(f.skill, "runs.json"), "upstream must not own host metadata");
     commit(f.repo, "reserved");
-    expect(() => execute(f.home, "sync", [])).toThrow(
-      expect.objectContaining({ code: "RESERVED_FILE" }),
-    );
+    expect(execute(f.home, "sync", [])).toMatchObject({
+      result: {
+        outcome: "PARTIAL",
+        sources: [{ holds: [{ path: ".agents/skills/helper", code: "RESERVED_FILE" }] }],
+        entries: [{ candidate: null, outcome: "HELD" }],
+      },
+    });
     expect(fs.readFileSync(join(target, "runs.json"), "utf8")).toContain('"runs"');
   } finally {
     f.cleanup();

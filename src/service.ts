@@ -36,7 +36,7 @@ import {
   preflightSource,
   sourcePath,
 } from "./git";
-import { discover, metadataTree } from "./discovery";
+import { discover, metadataTree, selectedHold, type Discovery, type Hold } from "./discovery";
 import { load, pending, save, unlock, withLock, runtimePath, type Context } from "./state";
 import { destinationHash, applyEntry, expectedLive, recover, targetPath } from "./deployment";
 import {
@@ -136,12 +136,26 @@ function source(ctx: Context, id: string): Source {
 }
 export function eventsFor(result: unknown): unknown[] {
   const value = result as {
-    sources?: { id: string; outcome: string; code?: string }[];
+    sources?: { id: string; outcome: string; code?: string; holds?: Hold[] }[];
+    source?: string;
+    holds?: Hold[];
+    entry?: Entry;
     entries?: Entry[];
     outcome?: string;
     id?: string;
   };
   const events: unknown[] = [];
+  function held(holds: Hold[], source: string | undefined) {
+    for (const hold of holds)
+      events.push({
+        version: 1,
+        type: hold.scope === "skill" ? "skill.held" : "projection.held",
+        source,
+        ...hold,
+        action: "reconcile this path; unsupported content remains excluded",
+      });
+  }
+  held(value.holds ?? [], value.source);
   for (const source of Array.isArray(value.sources) ? value.sources : [])
     if (source.outcome === "ERROR")
       events.push({
@@ -151,13 +165,19 @@ export function eventsFor(result: unknown): unknown[] {
         code: source.code,
         action: "reconcile source and retry",
       });
-  for (const entry of Array.isArray(value.entries) ? value.entries : [])
+    else held(source.holds ?? [], source.id);
+  for (const entry of value.entry
+    ? [value.entry]
+    : Array.isArray(value.entries)
+      ? value.entries
+      : [])
     if (["HELD", "CONFLICT", "DRIFT"].includes(entry.outcome))
       events.push({
         version: 1,
         type: `skill.${entry.outcome.toLowerCase()}`,
         id: entry.id,
         source: entry.source,
+        path: entry.path,
         reasons: entry.reasons,
         candidate: entry.candidate?.hash ?? null,
         action: "review; approval and apply remain explicit",
@@ -223,6 +243,7 @@ function stage(
   root: string,
   dryRun: boolean,
   scratchRoot: string,
+  discovery: Discovery,
 ): Entry {
   const target = targetPath(ctx, entry.id);
   let observed: string | null;
@@ -245,7 +266,15 @@ function stage(
       outcome: "DRIFT",
       reasons: ["Library differs from accepted baseline; capture local changes before sync"],
     };
-  const skill = discover(root).find((s) => s.path === entry.path);
+  const hold = selectedHold(discovery, entry.path, true);
+  if (hold)
+    return {
+      ...entry,
+      candidate: null,
+      outcome: "HELD",
+      reasons: [`${hold.code}: ${hold.path}: ${hold.message}`],
+    };
+  const skill = discovery.skills.find((s) => s.path === entry.path);
   if (!skill)
     return {
       ...entry,
@@ -280,7 +309,23 @@ function stage(
       };
     candidateTree = merged.tree;
   }
-  metadataTree(candidateTree);
+  try {
+    metadataTree(candidateTree);
+  } catch (error) {
+    if (!(error instanceof SkilltreeError)) throw error;
+    discovery.holds.push({
+      path: entry.path,
+      scope: "skill",
+      code: error.code,
+      message: error.message,
+    });
+    return {
+      ...entry,
+      candidate: null,
+      outcome: "HELD",
+      reasons: [`${error.code}: ${entry.path}: ${error.message}`],
+    };
+  }
   const upstreamHash = treeHash(upstreamTree);
   const candidateHash = treeHash(candidateTree);
   if (!dryRun) {
@@ -292,7 +337,8 @@ function stage(
     candidateTree,
   );
   const approved = entry.approval?.hash === candidateHash;
-  if (!approved) reasons.unshift("Exact candidate approval required");
+  if (!approved && !(entry.deployed?.hash === candidateHash && !entry.observed))
+    reasons.unshift("Exact candidate approval required");
   return {
     ...entry,
     upstream: { hash: upstreamHash, revision: acquired.revision },
@@ -351,7 +397,13 @@ export function execute(
   }
   if (command === "inventory") {
     const s = source(ctx, args[0] ?? required(options.source, "source"));
-    return { source: s, skills: discover(sourceRoot(ctx, s)) };
+    const inventory = discover(sourceRoot(ctx, s));
+    return {
+      outcome: inventory.holds.length ? (inventory.skills.length ? "PARTIAL" : "ERROR") : "OK",
+      source: s,
+      ...inventory,
+      events: eventsFor({ source: s.id, holds: inventory.holds }),
+    };
   }
   if (command === "doctor") {
     const issues: string[] = [];
@@ -593,7 +645,15 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (ctx.lock.entries.some((e) => e.id === id || (e.source === s.id && e.path === path)))
       fail("EXISTS", "Selection or destination ID already owned");
     const root = sourceRoot(ctx, s);
-    const item = discover(root).find((e) => e.path === path);
+    const inventory = discover(root);
+    const hold = selectedHold(inventory, path);
+    if (hold)
+      throw new SkilltreeError(
+        hold.code,
+        `Source ${s.id}: ${hold.path}: ${hold.message}`,
+        eventsFor({ source: s.id, holds: [hold] }),
+      );
+    const item = inventory.skills.find((e) => e.path === path);
     if (!item) fail("NOT_FOUND", "Exact skill path not in inventory");
     if (destinationHash(ctx, targetPath(ctx, id)) !== null)
       fail("COLLISION", "Destination already exists and is not owned");
@@ -634,17 +694,21 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     }
     if (options.install)
       return dryRun ? { outcome: "WOULD_INSTALL", entry } : applyEntry(ctx, entry, digest, false);
-    return { outcome: dryRun ? "WOULD_SELECT" : "SELECTED", entry };
+    return { outcome: dryRun ? "WOULD_SELECT" : "SELECTED", entry, events: eventsFor({ entry }) };
   }
   if (command === "sync")
     return scratch(ctx, (scratchRoot) => {
       const results: {
         id: string;
-        outcome: "STAGED" | "ERROR";
+        outcome: "STAGED" | "PARTIAL" | "ERROR";
+        holds?: Hold[];
         code?: string;
         message?: string;
       }[] = [];
-      const successful = new Map<string, { source: Source; root: string; entries: Entry[] }>();
+      const successful = new Map<
+        string,
+        { source: Source; root: string; entries: Entry[]; discovery: Discovery }
+      >();
       for (const s of ctx.lock.sources) {
         try {
           sourceRoot(ctx, s);
@@ -653,13 +717,18 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           const item = acquire(home, s.id, s.repository, s.ref);
           const root = join(home, "repos", s.id);
           checkpointScratch(scratchRoot);
+          const discovery = discover(root);
           const entries = ctx.lock.entries
             .filter((e) => e.source === s.id)
-            .map((e) => stage(ctx, e, item, root, true, scratchRoot));
+            .map((e) => stage(ctx, e, item, root, true, scratchRoot, discovery));
           sourceRoot(ctx, s);
           checkpointScratch(scratchRoot);
-          successful.set(s.id, { source: item, root, entries });
-          results.push({ id: s.id, outcome: "STAGED" });
+          successful.set(s.id, { source: item, root, entries, discovery });
+          results.push({
+            id: s.id,
+            outcome: entries.some((entry) => !entry.candidate) ? "PARTIAL" : "STAGED",
+            holds: discovery.holds,
+          });
         } catch (error) {
           const code = error instanceof SkilltreeError ? error.code : sourceFailure(error);
           results.push({
@@ -682,9 +751,13 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
         if (!item || dryRun) return s;
         try {
           sourceRoot(ctx, s);
+          item.discovery = discover(item.root);
           item.entries = ctx.lock.entries
             .filter((e) => e.source === s.id)
-            .map((e) => stage(ctx, e, item.source, item.root, false, scratchRoot));
+            .map((e) => stage(ctx, e, item.source, item.root, false, scratchRoot, item.discovery));
+          const result = results.find((r) => r.id === s.id)!;
+          result.holds = item.discovery.holds;
+          result.outcome = item.entries.some((entry) => !entry.candidate) ? "PARTIAL" : "STAGED";
           return s.checkout && s.revision === item.source.revision
             ? s
             : publishSource(ctx.home, item);
@@ -727,9 +800,10 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           if (sources.find((s) => s.id === old.id)?.checkout !== old.checkout && old.archive)
             retireSource(ctx.home, old);
       }
-      const failed = results.some((r) => r.outcome === "ERROR");
+      const failed = results.some((r) => r.outcome !== "STAGED");
       return {
-        outcome: dryRun ? "DRY_RUN" : failed ? (successful.size ? "PARTIAL" : "ERROR") : "STAGED",
+        outcome: failed ? (successful.size ? "PARTIAL" : "ERROR") : dryRun ? "DRY_RUN" : "STAGED",
+        dryRun,
         sources: results,
         entries,
         events: eventsFor({ sources: results, entries }),

@@ -4,6 +4,7 @@ export class SkilltreeError extends Error {
   constructor(
     public readonly code: string,
     message: string,
+    public readonly events: unknown[] = [],
   ) {
     super(message);
   }
@@ -28,7 +29,9 @@ export const relativePath = z
   );
 export const fileSchema = z
   .object({
-    data: z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+    // Avoid a repeated fixed-length group: V8 exhausts its regexp stack on supported
+    // multi-megabyte files. Padding and length still require complete base64.
+    data: z.string().refine((data) => data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(data)),
     executable: z.boolean(),
   })
   .strict();

@@ -68,7 +68,9 @@ export function authoritative(home: string): string {
       .sort()
       .flatMap((name) => {
         const path = join(dir, name);
-        return fs.statSync(path).isDirectory()
+        const stat = fs.lstatSync(path);
+        if (stat.isSymbolicLink()) return [path + ":link:" + fs.readlinkSync(path)];
+        return stat.isDirectory()
           ? entries(path)
           : [path + ":" + fs.readFileSync(path).toString("base64")];
       });

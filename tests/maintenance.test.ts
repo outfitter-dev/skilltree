@@ -37,7 +37,7 @@ test("host metadata holds only the affected skill and existing configuration mig
         entries: { id: string; outcome: string; candidate: unknown }[];
       };
     };
-    expect(result.result.sources[0]!.outcome).toBe("STAGED");
+    expect(result.result.sources[0]!.outcome).toBe("PARTIAL");
     expect(result.result.entries.find((e) => e.id === "helper")!.outcome).toBe("HELD");
     expect(result.result.entries.find((e) => e.id === "other")!.candidate).not.toBeNull();
     const before = fs.readFileSync(join(f.home, "skilltree.json"), "utf8");
