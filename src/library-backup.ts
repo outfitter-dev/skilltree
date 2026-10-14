@@ -340,7 +340,7 @@ function diff(before: DirectoryTree, after: DirectoryTree): unknown {
   }
   return { added, removed, changed, rootExists: { before: before.exists, after: after.exists } };
 }
-function nextLock(ctx: Context, target: Snapshot, stage: string): Lock {
+function restoredOwnership(ctx: Context, target: Snapshot): Lock {
   const next = lockSchema.parse(ctx.lock);
   for (const oldSource of target.lock.sources) {
     const currentSource = next.sources.find((s) => s.id === oldSource.id);
@@ -360,10 +360,17 @@ function nextLock(ctx: Context, target: Snapshot, stage: string): Lock {
     if (!currentSource) next.sources.push(oldSource);
     next.entries.push(entry);
   }
-  next.entries = next.entries.map((entry) => {
+  for (const entry of next.entries) {
     const old = target.lock.entries.find((e) => e.id === entry.id);
     if (old && (old.source !== entry.source || old.path !== entry.path || old.name !== entry.name))
       fail("REVERT_AMBIGUOUS", "Selection identity changed since the recovery point");
+  }
+  return next;
+}
+function nextLock(ctx: Context, target: Snapshot, stage: string): Lock {
+  const next = restoredOwnership(ctx, target);
+  next.entries = next.entries.map((entry) => {
+    const old = target.lock.entries.find((e) => e.id === entry.id);
     const restored = {
       ...entry,
       deployed: old?.deployed ?? null,
@@ -419,11 +426,7 @@ export function revertLibrary(
     changes = diff(currentTree, target.tree);
   if (expected && hash.parse(expected) !== currentHash)
     fail("REVERT_STALE", "Library changed after the reviewed diff");
-  for (const entry of ctx.lock.entries) {
-    const old = target.lock.entries.find((e) => e.id === entry.id);
-    if (old && (old.source !== entry.source || old.path !== entry.path || old.name !== entry.name))
-      fail("REVERT_AMBIGUOUS", "Selection identity changed since backup");
-  }
+  restoredOwnership(ctx, target);
   if (dryRun)
     return {
       outcome: "WOULD_REVERT",

@@ -5,7 +5,7 @@ import { checkedPython, type PythonIdentity } from "./filesystem-capabilities";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   fail,
@@ -64,7 +64,6 @@ import {
   libraryPending,
   revertLibrary,
   recoverLibrary,
-  readLibrarySnapshot,
 } from "./library-backup";
 import { probeSkills } from "./skills-adapter";
 import { checkedId } from "./command-input";
@@ -73,9 +72,11 @@ import {
   qualifiedRepository,
   selectedIds,
   skillId,
+  sameRepository,
   sourceId,
 } from "./source-selection";
 import { applyRemoval, recoverRemoval, stageRemovals } from "./removal";
+import { validateAutomaticReplacement } from "./automatic-recovery";
 
 export interface Options {
   skills?: string[];
@@ -631,44 +632,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     !scratchRepairPending(ctx.home)
   ) {
     const journal = pending(ctx);
-    if (journal && journal.version !== 4) {
-      if (
-        !journal.recoveryPoint ||
-        journal.configuration !==
-          createHash("sha256").update(JSON.stringify(ctx.manifest)).digest("hex")
-      )
-        fail(
-          "RECOVERY_REQUIRED",
-          "Interrupted transaction lacks complete backup/configuration evidence; inspect recover --dry-run",
-        );
-      const point = readLibrarySnapshot(ctx, journal.recoveryPoint);
-      const after = structuredClone(point.lock);
-      const index = after.entries.findIndex((e) => e.id === journal.id);
-      if (index < 0)
-        fail("RECOVERY_REQUIRED", "Backup lacks transaction ownership; inspect recover --dry-run");
-      after.entries[index] = journal.next;
-      if (
-        JSON.stringify(ctx.lock) !== JSON.stringify(point.lock) &&
-        JSON.stringify(ctx.lock) !== JSON.stringify(after)
-      )
-        fail(
-          "RECOVERY_REQUIRED",
-          "Collection ownership changed after transaction intent; inspect recover --dry-run",
-        );
-      const entry = ctx.lock.entries.find((e) => e.id === journal.id);
-      if (
-        !entry ||
-        entry.source !== journal.next.source ||
-        entry.path !== journal.next.path ||
-        entry.name !== journal.next.name ||
-        (expectedLive(entry) !== journal.oldHash &&
-          expectedLive(entry) !== journal.next.deployed?.hash)
-      )
-        fail(
-          "RECOVERY_REQUIRED",
-          "Interrupted transaction ownership is ambiguous; inspect recover --dry-run",
-        );
-    }
+    if (journal && journal.version !== 4) validateAutomaticReplacement(ctx, journal);
     const preview = libraryPending(ctx)
       ? recoverLibrary(ctx, true)
       : journal?.version === 4
@@ -723,16 +687,20 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (options.id && (!names.length || names.includes("*") || names.length !== 1))
       fail("USAGE", "--id requires exactly one named skill");
     const existing = ctx.lock.sources.find((s) => s.id === id);
-    if (existing && (existing.repository !== repo || (options.ref && existing.ref !== options.ref)))
+    if (
+      existing &&
+      (!sameRepository(existing.repository, repo) || (options.ref && existing.ref !== options.ref))
+    )
       fail(
         "EXISTS",
         "Source ID belongs to a different repository/ref; use --source to disambiguate",
       );
     if (existing && !names.length) fail("EXISTS", "Source ID already exists");
-    const ref = options.ref ?? "HEAD";
+    const ref = options.ref ?? existing?.ref ?? "HEAD";
     return scratch(ctx, (root) => {
-      const acquired = existing ?? acquire(root, id, repo, ref);
-      const acquiredRoot = existing ? sourceRoot(ctx, existing) : join(root, "repos", id);
+      if (existing) sourceRoot(ctx, existing);
+      const acquired = acquire(root, id, existing?.repository ?? repo, ref);
+      const acquiredRoot = join(root, "repos", id);
       const fullDepth = options.fullDepth ?? existing?.fullDepth ?? false;
       const inventory = discover(acquiredRoot, fullDepth);
       const chosen = chooseSkills(inventory, names, repo);
@@ -764,38 +732,48 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           fail("COLLISION", "Destination already exists and is not owned");
       }
       checkpointScratch(root);
-      const accepted =
-        existing ??
-        (dryRun
-          ? acquired
+      if (existing) sourceRoot(ctx, existing);
+      const accepted = dryRun
+        ? { ...acquired, fullDepth }
+        : existing?.revision === acquired.revision
+          ? { ...existing, fullDepth }
           : publishSource(ctx.home, {
               source: { ...acquired, fullDepth },
               root: acquiredRoot,
-            }));
-      if (!dryRun && !existing) {
-        ctx.lock.sources.push(accepted);
+            });
+      if (!dryRun) {
+        if (existing) ctx.lock.sources = ctx.lock.sources.map((s) => (s.id === id ? accepted : s));
+        else ctx.lock.sources.push(accepted);
         save(ctx);
       }
       if (!chosen.length) return { outcome: dryRun ? "WOULD_ADD" : "ADDED", source: accepted };
       // Preview selection against the isolated clone without publishing state.
       if (dryRun) {
-        const entries = selected.map(({ skill, id: skillDestination }) => ({
-          id: skillDestination,
-          source: id,
-          path: skill.path,
-          name: skill.name,
-          outcome: "HELD",
-          candidate: { hash: skill.hash, revision: acquired.revision },
-          reasons: ["Exact candidate approval required"],
-        }));
+        const entries = selected.map(({ skill, id: skillDestination }) => {
+          const entry = ctx.lock.entries.find((e) => e.id === skillDestination);
+          return entry
+            ? stage(ctx, entry, accepted, acquiredRoot, true, root, inventory)
+            : {
+                id: skillDestination,
+                source: id,
+                path: skill.path,
+                name: skill.name,
+                outcome: "HELD",
+                candidate: { hash: skill.hash, revision: acquired.revision },
+                reasons: ["Exact candidate approval required"],
+              };
+        });
         return { outcome: "WOULD_SELECT", source: accepted, entries, holds: inventory.holds };
       }
-      if (existing && fullDepth && !existing.fullDepth) {
-        existing.fullDepth = true;
-        save(ctx);
-      }
       for (const { skill, id: skillDestination } of selected) {
-        if (!ctx.lock.entries.some((e) => e.source === id && e.path === skill.path))
+        const existingEntry = ctx.lock.entries.find(
+          (e) => e.source === id && e.path === skill.path,
+        );
+        if (existingEntry) {
+          const staged = stage(ctx, existingEntry, accepted, acquiredRoot, false, root, inventory);
+          ctx.lock.entries = ctx.lock.entries.map((e) => (e.id === existingEntry.id ? staged : e));
+          save(ctx);
+        } else
           mutate(ctx, "select", [id], {
             path: skill.path,
             id: skillDestination,
@@ -805,21 +783,33 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
       }
       const entries = selected.map(({ id }) => selection(ctx, id));
       const applied: unknown[] = [];
+      let failed = entries.some(
+        (e) => !e.candidate || e.outcome === "DRIFT" || e.outcome === "CONFLICT",
+      );
       if ((options.yes || options.install) && options.reason?.trim())
         for (const entry of entries) {
-          if (entry.removal)
-            fail("HELD", "Selection has a pending removal; reconcile it before installation");
-          if (!entry.candidate)
-            fail("HELD", "Selection has no candidate; plan and review before activation");
-          applied.push(
-            mutate(ctx, "apply", [entry.id], {
-              hash: entry.candidate.hash,
-              reason: options.reason,
-            }),
-          );
+          if (entry.removal || !entry.candidate) {
+            failed = true;
+            continue;
+          }
+          try {
+            applied.push(
+              mutate(ctx, "apply", [entry.id], {
+                hash: entry.candidate.hash,
+                reason: options.reason,
+              }),
+            );
+          } catch (error) {
+            failed = true;
+            applied.push({
+              id: entry.id,
+              outcome: "ERROR",
+              code: error instanceof SkilltreeError ? error.code : "ERROR",
+            });
+          }
         }
       return {
-        outcome: applied.length ? "UPDATED" : "HELD",
+        outcome: failed ? "PARTIAL" : applied.length ? "UPDATED" : "HELD",
         source: accepted,
         entries: entries.map((e) => selection(ctx, e.id)),
         holds: inventory.holds,
@@ -1048,6 +1038,12 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (sourceName && args.length) fail("USAGE", "Use --source without positional names");
     if (args.length && ids.length) fail("USAGE", "Do not combine positional names and --skill");
     if (args.length) {
+      for (const name of args)
+        if (
+          ctx.lock.sources.some((s) => s.id === name) &&
+          ctx.lock.entries.some((e) => e.id === name || e.name === name)
+        )
+          fail("AMBIGUOUS", "Name matches a source and a skill; use --source or --skill");
       if (args.length === 1 && ctx.lock.sources.some((s) => s.id === args[0])) {
         if (ctx.lock.entries.some((e) => e.id === args[0] || e.name === args[0]))
           fail("AMBIGUOUS", "Name matches a source and a skill; use --source or --skill");

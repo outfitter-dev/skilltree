@@ -8,6 +8,31 @@ export function qualifiedRepository(value: string): { repository: string; skill?
   const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)@([^@]+)$/.exec(value);
   return match ? { repository: match[1]!, skill: match[2]! } : { repository: value };
 }
+function githubIdentity(value: string): string | null {
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) return "github.com/" + value.toLowerCase();
+  try {
+    const url = new URL(value);
+    const path = url.pathname.replace(/\/$/, "").replace(/\.git$/, "");
+    if (
+      url.protocol !== "https:" ||
+      url.host !== "github.com" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path)
+    )
+      return null;
+    return "github.com" + path.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+export function sameRepository(left: string, right: string): boolean {
+  const a = githubIdentity(left),
+    b = githubIdentity(right);
+  return a !== null && b !== null ? a === b : left === right;
+}
 export function sourceId(repo: string): string {
   const name = repo.startsWith("https://")
     ? new URL(repo).pathname.replace(/^\//, "")
@@ -35,7 +60,7 @@ export function chooseSkills(inventory: Discovery, names: string[], repo: string
   const selected = new Map<string, Skill>();
   for (const raw of requested) {
     const qualified = qualifiedRepository(raw);
-    if (qualified.skill && sourceId(qualified.repository) !== sourceId(repo))
+    if (qualified.skill && !sameRepository(qualified.repository, repo))
       fail("NOT_FOUND", "Qualified skill belongs to a different repository");
     const name = qualified.skill ?? raw;
     const matches = inventory.skills.filter((s) => s.name === name || s.path === name);
@@ -62,7 +87,7 @@ export function selectedIds(entries: Entry[], sources: Source[], names: string[]
       qualified.skill
         ? (e.name === qualified.skill || e.id === qualified.skill) &&
           sources.some(
-            (s) => s.id === e.source && sourceId(s.repository) === sourceId(qualified.repository),
+            (s) => s.id === e.source && sameRepository(s.repository, qualified.repository),
           )
         : e.id === name || e.name === name,
     );
