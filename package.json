@@ -1,6 +1,6 @@
 {
   "name": "@outfitter/skilltree",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Git-backed skill synchronization with explicit content approvals and local-edit preservation.",
   "homepage": "https://github.com/outfitter-dev/skilltree#readme",
   "bugs": {
