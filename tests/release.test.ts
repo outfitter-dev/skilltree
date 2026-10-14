@@ -112,6 +112,24 @@ test("release workflow cannot publish from a PR, unreviewed ordinary push or mis
   expect(text).toContain("npm@11.18.0");
   expect(workflow.jobs["github-release"].needs).toContain("registry-smoke");
 });
+test("Changesets v3 version preparation keeps migrated inputs and no publish capabilities", () => {
+  const workflow = parse(fs.readFileSync(".github/workflows/release.yml", "utf8"));
+  const step = workflow.jobs.version.steps.find((s: { uses?: string }) =>
+    s.uses?.startsWith("changesets/action@"),
+  );
+  expect(step.if).toBe("steps.pending.outputs.pending == 'true'");
+  expect(step.with["version-script"]).toBe("bun run version:packages");
+  expect(step.with["commit-message"]).toBe("chore(release): version packages");
+  expect(step.with["pr-title"]).toBe("chore(release): version packages");
+  expect(step.with["github-token"]).toBe("${{ github.token }}");
+  expect(step.with["push-with-git-cli"]).toBe(true);
+  expect(step.with["create-github-releases"]).toBe(false);
+  expect(step.with["push-git-tags"]).toBe(false);
+  expect(step.with["publish-script"]).toBeUndefined();
+  for (const legacy of ["version", "commit", "title", "publish"])
+    expect(step.with[legacy]).toBeUndefined();
+  expect(step.env?.GITHUB_TOKEN).toBeUndefined();
+});
 
 const historic: WorkflowEvidence = {
   id: 10,
