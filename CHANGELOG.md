@@ -1,5 +1,12 @@
 # @outfitter/skilltree
 
+## 0.1.0-rc.2
+
+### Patch Changes
+
+- 1fd7f87: Use a Changesets v3-compatible version action so subsequent release candidates can read retained prerelease changesets and prepare reviewed version PRs.
+- e526ffe: Add compatible skill selection, plan/apply and snapshot commands while preserving explicit hash approval, full-library backups, local edits and guarded recovery.
+
 ## 0.1.0-rc.1
 
 ### Patch Changes
