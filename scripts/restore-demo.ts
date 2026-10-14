@@ -54,7 +54,10 @@ function cli(args: string[], expectedExit = 0) {
     const failed = error as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
     const diagnostic = failed.stdout?.length ? failed.stdout : failed.stderr;
     if (failed.status !== expectedExit || !diagnostic?.length) throw error;
-    output = diagnostic.toString();
+    // Legacy aliases add one stderr deprecation line before a JSON error.
+    output = failed.stdout?.length
+      ? diagnostic.toString()
+      : diagnostic.toString().trim().split("\n").at(-1)!;
   }
   const result = JSON.parse(output) as {
     outcome?: string;

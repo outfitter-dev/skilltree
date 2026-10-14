@@ -4,12 +4,13 @@ import { compactLibrary } from "./library-maintenance";
 import { checkedPython, type PythonIdentity } from "./filesystem-capabilities";
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   fail,
   slug,
-  relativePath,
+  skillPath,
   hash,
   manifestSchema,
   SkilltreeError,
@@ -65,8 +66,25 @@ import {
   recoverLibrary,
 } from "./library-backup";
 import { probeSkills } from "./skills-adapter";
+import { checkedId } from "./command-input";
+import {
+  chooseSkills,
+  qualifiedRepository,
+  selectedIds,
+  skillId,
+  sameRepository,
+  sourceId,
+} from "./source-selection";
+import { applyRemoval, recoverRemoval, stageRemovals } from "./removal";
+import { validateAutomaticReplacement } from "./automatic-recovery";
 
 export interface Options {
+  skills?: string[];
+  all?: boolean;
+  yes?: boolean;
+  list?: boolean;
+  fullDepth?: boolean;
+  force?: boolean;
   keepCurrent?: boolean;
   quietHost?: boolean;
   retainedDirectories?: boolean;
@@ -98,7 +116,7 @@ export interface Options {
   lockBackend?: "mkdir" | "flock";
 }
 function required(value: string | undefined, name: string): string {
-  if (!value) fail("USAGE", `Missing --${name}`);
+  if (!value?.trim()) fail("USAGE", `Missing --${name}`);
   return value;
 }
 function selection(ctx: Context, id: string): Entry {
@@ -266,6 +284,7 @@ function stage(
       outcome: "DRIFT",
       reasons: ["Library differs from accepted baseline; capture local changes before sync"],
     };
+  if (entry.removal) return entry;
   const hold = selectedHold(discovery, entry.path, true);
   if (hold)
     return {
@@ -291,7 +310,7 @@ function stage(
       outcome: "HELD",
       reasons: ["Selected upstream skill identity changed"],
     };
-  const upstreamTree = readTree(join(root, entry.path));
+  const upstreamTree = readTree(join(root, entry.path), entry.path === ".");
   let candidateTree = upstreamTree;
   if (entry.local) {
     const merged = mergeTrees(
@@ -359,7 +378,25 @@ export function execute(
   options: Options = {},
 ): unknown {
   const dryRun = options.dryRun ?? false;
-  if (command === "init") return initialize(home, options);
+  if (command === "init" || command === "setup") return initialize(home, options);
+  if (command === "add" && options.list) {
+    const query = qualifiedRepository(args[0] ?? fail("USAGE", "add requires a Git source"));
+    const repo = repository(query.repository);
+    const id = options.source ? checkedId(options.source, "Source ID") : sourceId(repo);
+    const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "skilltree-inventory-")));
+    try {
+      const acquired = acquire(root, id, repo, options.ref ?? "HEAD");
+      const inventory = discover(join(root, "repos", id), options.fullDepth);
+      return {
+        outcome: inventory.holds.length ? (inventory.skills.length ? "PARTIAL" : "ERROR") : "OK",
+        source: acquired,
+        ...inventory,
+        events: eventsFor({ source: id, holds: inventory.holds }),
+      };
+    } finally {
+      fs.rmSync(root, { recursive: true });
+    }
+  }
   const ctx = load(home);
   if (command === "backups") return libraryBackups(ctx);
   if (command === "list" || command === "status" || command === "verify") {
@@ -397,7 +434,7 @@ export function execute(
   }
   if (command === "inventory") {
     const s = source(ctx, args[0] ?? required(options.source, "source"));
-    const inventory = discover(sourceRoot(ctx, s));
+    const inventory = discover(sourceRoot(ctx, s), options.fullDepth ?? s.fullDepth);
     return {
       outcome: inventory.holds.length ? (inventory.skills.length ? "PARTIAL" : "ERROR") : "OK",
       source: s,
@@ -503,7 +540,7 @@ export function execute(
           entry.upstream.hash,
           entry.local?.hash,
           entry.local?.base,
-          entry.candidate?.hash,
+          entry.removal ? undefined : entry.candidate?.hash,
           entry.deployed?.hash,
           entry.observed,
         ].filter((v): v is string => !!v))
@@ -582,11 +619,35 @@ export function execute(
       const current = load(home);
       return report(current, command, mutate(current, command, args, options));
     },
-    command === "recover",
+    command === "recover" || options.quietHost === true,
   );
 }
 function mutate(ctx: Context, command: string, args: string[], options: Options): unknown {
   const dryRun = options.dryRun ?? false;
+  if (
+    (pending(ctx) || libraryPending(ctx)) &&
+    command !== "recover" &&
+    !dryRun &&
+    options.quietHost &&
+    !scratchRepairPending(ctx.home)
+  ) {
+    const journal = pending(ctx);
+    if (journal && journal.version !== 4) validateAutomaticReplacement(ctx, journal);
+    const preview = libraryPending(ctx)
+      ? recoverLibrary(ctx, true)
+      : journal?.version === 4
+        ? recoverRemoval(ctx, true)
+        : recover(ctx, true);
+    if ((preview as { drift?: boolean }).drift)
+      fail("RECOVERY_REQUIRED", "Retained transaction bytes changed; inspect recover --dry-run");
+    const recovered = libraryPending(ctx)
+      ? recoverLibrary(ctx, false, false, undefined, true)
+      : journal?.version === 4
+        ? recoverRemoval(ctx, false)
+        : recover(ctx, false);
+    report(ctx, "recover", recovered);
+    ctx.lock = load(ctx.home).lock;
+  }
   if (
     (pending(ctx) || libraryPending(ctx) || scratchRepairPending(ctx.home)) &&
     command !== "recover"
@@ -618,34 +679,153 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
   if (command === "archive") return archiveAccepted(ctx, dryRun);
   if (command === "restore") return restoreMaterializations(ctx, dryRun);
   if (command === "add") {
-    const id = slug.parse(required(options.source, "source"));
-    if (ctx.lock.sources.some((s) => s.id === id)) fail("EXISTS", "Source ID already exists");
-    const repo = repository(args[0] ?? fail("USAGE", "add requires a Git source"));
-    const ref = options.ref ?? "HEAD";
+    const query = qualifiedRepository(args[0] ?? fail("USAGE", "add requires a Git source"));
+    const repo = repository(query.repository);
+    const id = options.source ? checkedId(options.source, "Source ID") : sourceId(repo);
+    const names = [...(query.skill ? [query.skill] : []), ...(options.skills ?? [])];
+    if (options.all) names.push("*");
+    if (options.id && (!names.length || names.includes("*") || names.length !== 1))
+      fail("USAGE", "--id requires exactly one named skill");
+    const existing = ctx.lock.sources.find((s) => s.id === id);
+    if (
+      existing &&
+      (!sameRepository(existing.repository, repo) || (options.ref && existing.ref !== options.ref))
+    )
+      fail(
+        "EXISTS",
+        "Source ID belongs to a different repository/ref; use --source to disambiguate",
+      );
+    if (existing && !names.length) fail("EXISTS", "Source ID already exists");
+    const ref = options.ref ?? existing?.ref ?? "HEAD";
     return scratch(ctx, (root) => {
-      const acquired = acquire(root, id, repo, ref);
+      if (existing) sourceRoot(ctx, existing);
+      const acquired = acquire(root, id, existing?.repository ?? repo, ref);
+      const acquiredRoot = join(root, "repos", id);
+      const fullDepth = options.fullDepth ?? existing?.fullDepth ?? false;
+      const inventory = discover(acquiredRoot, fullDepth);
+      const chosen = chooseSkills(inventory, names, repo);
+      const selected = chosen.map((skill) => ({
+        skill,
+        id: options.id ? checkedId(options.id) : skillId(skill.name),
+      }));
+      if (new Set(selected.map((s) => s.id)).size !== selected.length)
+        fail(
+          "AMBIGUOUS",
+          "Selected skills derive the same destination ID; select exact paths with distinct IDs",
+        );
+      for (const item of selected) {
+        const entry = ctx.lock.entries.find(
+          (e) => e.id === item.id || (e.source === id && e.path === item.skill.path),
+        );
+        if (
+          entry &&
+          (entry.id !== item.id ||
+            entry.source !== id ||
+            entry.path !== item.skill.path ||
+            entry.name !== item.skill.name)
+        )
+          fail(
+            "COLLISION",
+            "Selected destination ID is already owned; use --id for an exact single selection",
+          );
+        if (!entry && destinationHash(ctx, targetPath(ctx, item.id)) !== null)
+          fail("COLLISION", "Destination already exists and is not owned");
+      }
       checkpointScratch(root);
+      if (existing) sourceRoot(ctx, existing);
       const accepted = dryRun
-        ? acquired
-        : publishSource(ctx.home, {
-            source: acquired,
-            root: join(root, "repos", id),
-          });
+        ? { ...acquired, fullDepth }
+        : existing?.revision === acquired.revision
+          ? { ...existing, fullDepth }
+          : publishSource(ctx.home, {
+              source: { ...acquired, fullDepth },
+              root: acquiredRoot,
+            });
       if (!dryRun) {
-        ctx.lock.sources.push(accepted);
+        if (existing) ctx.lock.sources = ctx.lock.sources.map((s) => (s.id === id ? accepted : s));
+        else ctx.lock.sources.push(accepted);
         save(ctx);
       }
-      return { outcome: dryRun ? "WOULD_ADD" : "ADDED", source: accepted };
+      if (!chosen.length) return { outcome: dryRun ? "WOULD_ADD" : "ADDED", source: accepted };
+      // Preview selection against the isolated clone without publishing state.
+      if (dryRun) {
+        const entries = selected.map(({ skill, id: skillDestination }) => {
+          const entry = ctx.lock.entries.find((e) => e.id === skillDestination);
+          return entry
+            ? stage(ctx, entry, accepted, acquiredRoot, true, root, inventory)
+            : {
+                id: skillDestination,
+                source: id,
+                path: skill.path,
+                name: skill.name,
+                outcome: "HELD",
+                candidate: { hash: skill.hash, revision: acquired.revision },
+                reasons: ["Exact candidate approval required"],
+              };
+        });
+        return { outcome: "WOULD_SELECT", source: accepted, entries, holds: inventory.holds };
+      }
+      for (const { skill, id: skillDestination } of selected) {
+        const existingEntry = ctx.lock.entries.find(
+          (e) => e.source === id && e.path === skill.path,
+        );
+        if (existingEntry) {
+          const staged = stage(ctx, existingEntry, accepted, acquiredRoot, false, root, inventory);
+          ctx.lock.entries = ctx.lock.entries.map((e) => (e.id === existingEntry.id ? staged : e));
+          save(ctx);
+        } else
+          mutate(ctx, "select", [id], {
+            path: skill.path,
+            id: skillDestination,
+            ...(options.profile ? { profile: options.profile } : {}),
+            fullDepth,
+          });
+      }
+      const entries = selected.map(({ id }) => selection(ctx, id));
+      const applied: unknown[] = [];
+      let failed = entries.some(
+        (e) => !e.candidate || e.outcome === "DRIFT" || e.outcome === "CONFLICT",
+      );
+      if ((options.yes || options.install) && options.reason?.trim())
+        for (const entry of entries) {
+          if (entry.removal || !entry.candidate) {
+            failed = true;
+            continue;
+          }
+          try {
+            applied.push(
+              mutate(ctx, "apply", [entry.id], {
+                hash: entry.candidate.hash,
+                reason: options.reason,
+              }),
+            );
+          } catch (error) {
+            failed = true;
+            applied.push({
+              id: entry.id,
+              outcome: "ERROR",
+              code: error instanceof SkilltreeError ? error.code : "ERROR",
+            });
+          }
+        }
+      return {
+        outcome: failed ? "PARTIAL" : applied.length ? "UPDATED" : "HELD",
+        source: accepted,
+        entries: entries.map((e) => selection(ctx, e.id)),
+        holds: inventory.holds,
+        applied,
+        events: eventsFor({ source: id, entries, holds: inventory.holds }),
+      };
     });
   }
   if (command === "select") {
     const s = source(ctx, args[0] ?? "");
-    const path = relativePath.parse(required(options.path, "path"));
+    const path = skillPath.parse(required(options.path, "path"));
     const id = slug.parse(required(options.id, "id"));
     if (ctx.lock.entries.some((e) => e.id === id || (e.source === s.id && e.path === path)))
       fail("EXISTS", "Selection or destination ID already owned");
     const root = sourceRoot(ctx, s);
-    const inventory = discover(root);
+    const inventory = discover(root, options.fullDepth ?? s.fullDepth);
     const hold = selectedHold(inventory, path);
     if (hold)
       throw new SkilltreeError(
@@ -657,7 +837,7 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
     if (!item) fail("NOT_FOUND", "Exact skill path not in inventory");
     if (destinationHash(ctx, targetPath(ctx, id)) !== null)
       fail("COLLISION", "Destination already exists and is not owned");
-    const tree = readTree(join(root, path));
+    const tree = readTree(join(root, path), path === ".");
     const digest = treeHash(tree);
     const entry: Entry = {
       id,
@@ -696,7 +876,8 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
       return dryRun ? { outcome: "WOULD_INSTALL", entry } : applyEntry(ctx, entry, digest, false);
     return { outcome: dryRun ? "WOULD_SELECT" : "SELECTED", entry, events: eventsFor({ entry }) };
   }
-  if (command === "sync")
+  if (command === "sync" || command === "plan") {
+    const wanted = args.length ? selectedIds(ctx.lock.entries, ctx.lock.sources, args) : null;
     return scratch(ctx, (scratchRoot) => {
       const results: {
         id: string;
@@ -710,6 +891,8 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
         { source: Source; root: string; entries: Entry[]; discovery: Discovery }
       >();
       for (const s of ctx.lock.sources) {
+        if (wanted && !ctx.lock.entries.some((e) => e.source === s.id && wanted.has(e.id)))
+          continue;
         try {
           sourceRoot(ctx, s);
           const home = join(scratchRoot, s.id);
@@ -717,13 +900,18 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           const item = acquire(home, s.id, s.repository, s.ref);
           const root = join(home, "repos", s.id);
           checkpointScratch(scratchRoot);
-          const discovery = discover(root);
+          const discovery = discover(root, s.fullDepth);
           const entries = ctx.lock.entries
-            .filter((e) => e.source === s.id)
+            .filter((e) => e.source === s.id && (!wanted || wanted.has(e.id)))
             .map((e) => stage(ctx, e, item, root, true, scratchRoot, discovery));
           sourceRoot(ctx, s);
           checkpointScratch(scratchRoot);
-          successful.set(s.id, { source: item, root, entries, discovery });
+          successful.set(s.id, {
+            source: { ...item, ...(s.fullDepth ? { fullDepth: true } : {}) },
+            root,
+            entries,
+            discovery,
+          });
           results.push({
             id: s.id,
             outcome: entries.some((entry) => !entry.candidate) ? "PARTIAL" : "STAGED",
@@ -751,9 +939,9 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
         if (!item || dryRun) return s;
         try {
           sourceRoot(ctx, s);
-          item.discovery = discover(item.root);
+          item.discovery = discover(item.root, s.fullDepth);
           item.entries = ctx.lock.entries
-            .filter((e) => e.source === s.id)
+            .filter((e) => e.source === s.id && (!wanted || wanted.has(e.id)))
             .map((e) => stage(ctx, e, item.source, item.root, false, scratchRoot, item.discovery));
           const result = results.find((r) => r.id === s.id)!;
           result.holds = item.discovery.holds;
@@ -800,19 +988,110 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
           if (sources.find((s) => s.id === old.id)?.checkout !== old.checkout && old.archive)
             retireSource(ctx.home, old);
       }
-      const failed = results.some((r) => r.outcome !== "STAGED");
+      let failed = results.some((r) => r.outcome !== "STAGED");
+      const applied: unknown[] = [];
+      if (
+        command === "plan" &&
+        !dryRun &&
+        (options.yes || options.install) &&
+        options.reason?.trim()
+      )
+        for (const entry of entries.filter((e) => !wanted || wanted.has(e.id))) {
+          if (!successful.has(entry.source) || !entry.candidate || entry.removal) continue;
+          try {
+            applied.push(
+              mutate(ctx, "apply", [entry.id], {
+                hash: entry.candidate.hash,
+                reason: options.reason,
+              }),
+            );
+          } catch (error) {
+            failed = true;
+            applied.push({
+              id: entry.id,
+              outcome: "ERROR",
+              code: error instanceof SkilltreeError ? error.code : "ERROR",
+            });
+          }
+        }
       return {
-        outcome: failed ? (successful.size ? "PARTIAL" : "ERROR") : dryRun ? "DRY_RUN" : "STAGED",
+        outcome: failed
+          ? successful.size
+            ? "PARTIAL"
+            : "ERROR"
+          : dryRun
+            ? "DRY_RUN"
+            : applied.length
+              ? "UPDATED"
+              : "STAGED",
         dryRun,
         sources: results,
-        entries,
+        entries: command === "plan" && applied.length ? ctx.lock.entries : entries,
+        ...(command === "plan" ? { applied } : {}),
         events: eventsFor({ sources: results, entries }),
       };
     });
+  }
+  if (command === "remove") {
+    let ids = options.skills ?? [];
+    let sourceName = options.source;
+    if (sourceName && args.length) fail("USAGE", "Use --source without positional names");
+    if (args.length && ids.length) fail("USAGE", "Do not combine positional names and --skill");
+    if (args.length) {
+      for (const name of args)
+        if (
+          ctx.lock.sources.some((s) => s.id === name) &&
+          ctx.lock.entries.some((e) => e.id === name || e.name === name)
+        )
+          fail("AMBIGUOUS", "Name matches a source and a skill; use --source or --skill");
+      if (args.length === 1 && ctx.lock.sources.some((s) => s.id === args[0])) {
+        if (ctx.lock.entries.some((e) => e.id === args[0] || e.name === args[0]))
+          fail("AMBIGUOUS", "Name matches a source and a skill; use --source or --skill");
+        sourceName = args[0];
+      } else ids = [...selectedIds(ctx.lock.entries, ctx.lock.sources, args)];
+    } else if (ids.length && !ids.includes("*"))
+      ids = [...selectedIds(ctx.lock.entries, ctx.lock.sources, ids)];
+    if (ids.includes("*")) {
+      if (ids.length !== 1) fail("USAGE", "Do not combine '*' with named removal selections");
+      options = { ...options, all: true };
+      ids = [];
+    }
+    const result = stageRemovals(ctx, ids, {
+      source: sourceName,
+      force: options.force,
+      all: options.all,
+      dryRun,
+    });
+    if (!dryRun && (options.yes || options.install) && options.reason?.trim()) {
+      const entries = (result as { entries?: Entry[] }).entries ?? [];
+      const applied: unknown[] = [];
+      let failed = false;
+      for (const entry of entries)
+        try {
+          applied.push(
+            mutate(ctx, "apply", [entry.id], {
+              hash: entry.candidate!.hash,
+              reason: options.reason,
+            }),
+          );
+        } catch (error) {
+          failed = true;
+          applied.push({
+            id: entry.id,
+            outcome: "ERROR",
+            code: error instanceof SkilltreeError ? error.code : "ERROR",
+          });
+        }
+      return { outcome: failed ? "PARTIAL" : "REMOVED", staged: result, applied };
+    }
+    return result;
+  }
   if (command === "recover")
     return libraryPending(ctx)
       ? recoverLibrary(ctx, dryRun, options.keepCurrent, options.expect, options.quietHost)
-      : recover(ctx, dryRun);
+      : pending(ctx)?.version === 4
+        ? recoverRemoval(ctx, dryRun)
+        : recover(ctx, dryRun);
   const entry = selection(ctx, args[0] ?? fail("USAGE", `${command} requires a selection ID`));
   if (command === "assign") {
     const profile = slug.parse(required(options.profile, "profile"));
@@ -854,21 +1133,27 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
       };
       entry.observed = digest;
       entry.candidate = null;
+      delete entry.removal;
       entry.outcome = "HELD";
       entry.reasons = ["Captured local edits; run sync to reconcile and stage before approval"];
       save(ctx);
     }
     return { outcome: dryRun ? "WOULD_CAPTURE" : "CAPTURED", id: entry.id, hash: digest };
   }
-  if (command === "approve") {
+  if (
+    (command === "approve" || command === "apply") &&
+    ["CONFLICT", "DRIFT"].includes(entry.outcome)
+  )
+    fail(entry.outcome, "Reconcile the held selection before approval or apply");
+  if (command === "approve" || (command === "apply" && options.reason !== undefined)) {
     const digest = hash.parse(required(options.hash, "hash"));
     const reason = required(options.reason, "reason");
     if (!entry.candidate || entry.candidate.hash !== digest)
       fail("STALE_CANDIDATE", "Approval must name the current complete candidate hash");
-    getObject(ctx.home, digest);
+    if (!entry.removal) getObject(ctx.home, digest);
     if (destinationHash(ctx, targetPath(ctx, entry.id)) !== expectedLive(entry))
       fail("DRIFT", "Capture or reconcile live drift before approving");
-    if (!dryRun) {
+    if (!dryRun || command === "apply") {
       entry.approval = {
         hash: digest,
         reason,
@@ -876,11 +1161,14 @@ function mutate(ctx: Context, command: string, args: string[], options: Options)
         at: new Date().toISOString(),
       };
       entry.outcome = "STAGED";
-      save(ctx);
+      if (!dryRun) save(ctx);
     }
-    return { outcome: dryRun ? "WOULD_APPROVE" : "APPROVED", id: entry.id, hash: digest };
+    if (command === "approve")
+      return { outcome: dryRun ? "WOULD_APPROVE" : "APPROVED", id: entry.id, hash: digest };
   }
   if (command === "apply")
-    return applyEntry(ctx, entry, hash.parse(required(options.hash, "hash")), dryRun);
+    return entry.removal
+      ? applyRemoval(ctx, entry, hash.parse(required(options.hash, "hash")), dryRun)
+      : applyEntry(ctx, entry, hash.parse(required(options.hash, "hash")), dryRun);
   return fail("USAGE", `Unknown command ${command}`);
 }

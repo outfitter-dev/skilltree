@@ -1,141 +1,142 @@
 import { buildInfo } from "./version";
-import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import * as fs from "node:fs";
+import { join } from "node:path";
 import { execute, type Options } from "./service";
-import { SkilltreeError } from "./model";
+import { SkilltreeError, fail } from "./model";
+import { assertNoSymlinks, exists } from "./files";
+import { canonicalCommand, checkedId, deprecated, parseCommand, stateHome } from "./command-input";
 
-const HELP = `Skilltree — first release candidate
+const usage: Record<string, string> = {
+  init: "init <name> [--dry-run]  Scaffold a new <name>/SKILL.md; refuses existing paths",
+  setup:
+    "setup --dest <shared-library> --exclusive-dest [--adapter filesystem|grok] [--storage <path>] [--runtime-root <path>] [--lock-backend mkdir|flock]",
+  add: "add <local-git-directory|owner/repo[@skill]|https-url> [--source <id>] [--ref <ref>] [--skill|-s <names...>|--all] [--list|-l] [--full-depth] [--id <single-destination-id>] [--yes|-y|--install --reason <request>]",
+  remove:
+    "remove [source-or-skill...] [--source <id>|--skill|-s <ids...>|--all] [--force] [--yes|-y --reason <review>]  Stages reversible removals; force never bypasses apply gates",
+  list: "list [--profile|-a <profile>] [--json]  Filter shared metadata; profiles do not isolate access",
+  plan: "plan [ids...] [--yes|-y --reason <review>]  Fetch/reconcile/stage only by default; prints exact candidate hashes",
+  apply:
+    "apply <id> --hash <candidate-hash> [--reason <review>]  Approve and deploy; reason may be omitted only after legacy approve",
+  snapshot:
+    "snapshot <id> | snapshot --backup [--reason <reason>] | snapshot list | snapshot restore <id> --expect <reviewed-current-hash> --quiet-host [--dry-run]",
+  assign: "assign <id> --profile <profile>",
+  status: "status [--profile <profile>]",
+  verify: "verify [--profile <profile>]",
+  doctor: "doctor  Read-only filesystem, state and backup diagnostics",
+  configure: "configure [--adapter grok] [--runtime-root <path>] [--storage <path>]",
+  "migrate-storage": "migrate-storage [--dry-run]",
+  compact:
+    "compact --caches | --scratch | --retain-backups <count> | --retained-directories | --backup-scratch [--dry-run]",
+  archive: "archive [--dry-run]",
+  restore: "restore [--dry-run]  Materialize state archives; preserve old checkouts",
+  probe:
+    "probe <source-id> [--npx <executable>]  Optional pinned skills CLI listing (Node >=22.20)",
+};
+const legacyUsage: Record<string, string> = {
+  select: "select <source-id> --path <exact-path> --id <id> [--install --reason <request>]",
+  inventory: "inventory <source-id>",
+  sync: "sync",
+  approve: "approve <id> --hash <hash> --reason <review>",
+  capture: "capture <id>",
+  backup: "backup [--reason <reason>]",
+  backups: "backups",
+  revert: "revert --snapshot <id> --expect <reviewed-current-hash> --quiet-host [--dry-run]",
+  recover:
+    "recover [--scratch --expect <journal-hash>] [--unlock] [--quiet-host] [--keep-current --expect <hash>] [--dry-run]",
+};
+const HELP = `Skilltree — guarded shared skill library
 
-Usage: skilltree <command> --home <durable-state> [options]
-       skilltree --version
+Usage: skilltree <command> [--home <durable-state>] [options]
+       skilltree --version | -v | <command> --help
 
-init       --dest <shared-library> --exclusive-dest [--gardener <profile>] [--primary <profile>] [--lock-backend mkdir|flock]
-           [--adapter filesystem|grok] [--storage <path>] [--runtime-root <path>]
-add        <local-git-directory|owner/repo|https-url> --source <id> [--ref <ref>]
-inventory  <source-id>                 List normalized source projections
-select     <source-id> --path <skill-path> --id <destination-id> [--profile <profile>]
-           [--install --reason <explicit-request>]  Approve and apply this installation
-assign     <id> --profile <profile>    Add shared-library profile assignment
-list       [--profile <profile>]       Filter metadata; does not isolate access
-sync                                  Fetch/reconcile/stage only; never auto-approve or apply
-capture    <id>                        Adopt live edits into local Git history
-approve    <id> --hash <hash> --reason <review>
-apply      <id> --hash <hash>           Apply an exact approved candidate
-status | verify | doctor              Read-only state, drift and diagnostics
-backup     [--reason <reason>]         Verify complete directory recovery point
-backups                               List verified directory recovery points
-revert     --snapshot <id> --expect <reviewed-current-hash> --quiet-host [--dry-run]
-configure  [--adapter grok] [--runtime-root <path>] [--storage <path>]
-migrate-storage                       Relocate report-recognized legacy backups
-compact    --caches | --scratch | --retain-backups <count> | --retained-directories | --backup-scratch [--dry-run]
-archive                               Archive intact accepted Git histories
-restore                               Materialize verified archives; preserve old checkouts
-recover    [--scratch --expect <reviewed-journal-hash>] [--unlock] [--quiet-host] [--keep-current --expect <hash>]                  Explicit transaction/stale-lock recovery
-probe      <source-id> [--npx <executable>]  Optional pinned skills CLI listing (Node >=22.20)
+${Object.values(usage).join("\n")}
 
+Aliases: a=add, ls=list, rm=remove, update/upgrade=plan.
+Legacy commands until 0.2: select, inventory, init --dest, sync, approve, capture, backup, backups, revert.
+Home: explicit --home, then SKILLTREE_HOME, then Grok adapter default /workspace/skilltree.
+Output is JSON. --json is accepted. Agent/scope compatibility flags warn on stderr.
+--all selects only. Activation requires --yes/--install plus --reason, or apply with an exact hash.
 All state-writing commands accept --dry-run; no authoritative state is changed.
-Output is JSON. Git is required. Filesystem deployment needs coordinated exclusive access.
+Every live write needs a verified complete-library backup and unchanged ownership/drift baselines.
+Git is required. Filesystem deployment needs coordinated exclusive access.
 Grok host writes and catalog refresh are not verified integrations.
 `;
-const commands = new Set([
-  "init",
-  "add",
-  "inventory",
-  "select",
-  "assign",
-  "list",
-  "sync",
-  "capture",
-  "approve",
-  "apply",
-  "status",
-  "verify",
-  "doctor",
-  "backup",
-  "backups",
-  "revert",
-  "configure",
-  "migrate-storage",
-  "compact",
-  "archive",
-  "restore",
-  "recover",
-  "probe",
-]);
+function scaffold(name: string | undefined, dryRun: boolean): unknown {
+  if (!name) fail("USAGE", "init requires a new skill name; use setup --dest for library state");
+  checkedId(name, "Skill name");
+  const root = assertNoSymlinks(join(process.cwd(), name));
+  if (exists(root)) fail("EXISTS", "Skill scaffold path already exists; preserve it");
+  if (!dryRun) {
+    fs.mkdirSync(root);
+    fs.writeFileSync(
+      join(root, "SKILL.md"),
+      `---\nname: ${name}\ndescription: Describe when this skill should be used.\n---\n\n# ${name}\n\nAdd the skill instructions here.\n`,
+      { flag: "wx" },
+    );
+  }
+  return { outcome: dryRun ? "WOULD_SCAFFOLD" : "SCAFFOLDED", path: join(root, "SKILL.md") };
+}
 export function main(args: string[]): number {
   try {
-    const { values, positionals } = parseArgs({
-      args,
-      allowPositionals: true,
-      strict: true,
-      options: {
-        help: { type: "boolean", short: "h" },
-        version: { type: "boolean", short: "v" },
-        home: { type: "string" },
-        dest: { type: "string" },
-        source: { type: "string" },
-        ref: { type: "string" },
-        path: { type: "string" },
-        id: { type: "string" },
-        profile: { type: "string" },
-        install: { type: "boolean" },
-        reason: { type: "string" },
-        hash: { type: "string" },
-        "dry-run": { type: "boolean" },
-        "exclusive-dest": { type: "boolean" },
-        primary: { type: "string" },
-        gardener: { type: "string" },
-        unlock: { type: "boolean" },
-        npx: { type: "string" },
-        "lock-backend": { type: "string" },
-        "host-metadata": { type: "boolean" },
-        adapter: { type: "string" },
-        storage: { type: "string" },
-        "runtime-root": { type: "string" },
-        caches: { type: "boolean" },
-        scratch: { type: "boolean" },
-        "retain-backups": { type: "string" },
-        snapshot: { type: "string" },
-        expect: { type: "string" },
-        "keep-current": { type: "boolean" },
-        "quiet-host": { type: "boolean" },
-        "retained-directories": { type: "boolean" },
-        "backup-scratch": { type: "boolean" },
-      },
-    });
-    if (values.version) {
+    const { values, positionals, warnings } = parseCommand(args);
+    const str = (name: string) =>
+      typeof values[name] === "string" ? (values[name] as string) : undefined;
+    const bool = (name: string) => values[name] === true;
+    if (bool("version")) {
       console.log(JSON.stringify(buildInfo()));
       return 0;
     }
-    if (values.help || positionals.length === 0) {
-      console.log(HELP);
+    let command = canonicalCommand(positionals[0] ?? "");
+    let operands = positionals.slice(1);
+    if (command === "help") {
+      command = canonicalCommand(operands[0] ?? "");
+      operands = [];
+      values.help = true;
+    }
+    if (bool("help") || !command) {
+      if (command && !Object.hasOwn(usage, command) && !Object.hasOwn(legacyUsage, command))
+        fail("USAGE", "Unknown command");
+      console.log(
+        command
+          ? `Usage: skilltree ${usage[command] ?? legacyUsage[command]}\n\n${HELP.slice(HELP.indexOf("Home:"))}`
+          : HELP,
+      );
       return 0;
     }
-    const command = positionals[0]!;
-    if (!commands.has(command) || !values.home)
-      throw new SkilltreeError("USAGE", "Use a documented command and explicit --home; see --help");
+    if (!Object.hasOwn(usage, command) && !Object.hasOwn(legacyUsage, command))
+      fail("USAGE", "Unknown command; see --help");
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
+    if (Object.hasOwn(deprecated, command))
+      console.error(`Deprecated until 0.2: ${command}; use ${deprecated[command]}`);
+    if (command === "init" && str("dest")) {
+      console.error("Deprecated until 0.2: init --dest; use setup");
+      command = "setup";
+    }
     if (
-      positionals.length > 2 ||
-      ([
-        "init",
-        "list",
-        "sync",
-        "status",
-        "verify",
-        "doctor",
-        "recover",
-        "archive",
-        "restore",
-        "configure",
-        "migrate-storage",
-        "compact",
-        "backup",
-        "backups",
-        "revert",
-      ].includes(command) &&
-        positionals.length > 1)
+      !["plan", "remove", "snapshot"].includes(command) &&
+      operands.length >
+        ([
+          "setup",
+          "list",
+          "status",
+          "verify",
+          "doctor",
+          "recover",
+          "archive",
+          "restore",
+          "configure",
+          "migrate-storage",
+          "compact",
+          "backup",
+          "backups",
+          "revert",
+          "sync",
+        ].includes(command)
+          ? 0
+          : 1)
     )
-      throw new SkilltreeError("USAGE", "Unexpected positional arguments");
+      fail("USAGE", "Unexpected positional arguments");
     const options: Options = {};
     for (const name of [
       "snapshot",
@@ -151,42 +152,75 @@ export function main(args: string[]): number {
       "gardener",
       "npx",
     ] as const)
-      if (values[name] !== undefined) options[name] = values[name];
-    if (values["lock-backend"] !== undefined) {
-      if (!["mkdir", "flock"].includes(values["lock-backend"]))
-        throw new SkilltreeError("USAGE", "Unknown lock backend");
-      options.lockBackend = values["lock-backend"] as "mkdir" | "flock";
+      if (str(name) !== undefined) options[name] = str(name)!;
+    const mapping = {
+      "keep-current": "keepCurrent",
+      "quiet-host": "quietHost",
+      "retained-directories": "retainedDirectories",
+      "backup-scratch": "backupScratch",
+      caches: "caches",
+      scratch: "scratch",
+      "host-metadata": "hostMetadata",
+      install: "install",
+      yes: "yes",
+      all: "all",
+      force: "force",
+      "full-depth": "fullDepth",
+      "dry-run": "dryRun",
+      "exclusive-dest": "exclusive",
+      unlock: "unlock",
+      list: "list",
+    } as const;
+    for (const [flag, property] of Object.entries(mapping))
+      if (values[flag] !== undefined)
+        options[property as (typeof mapping)[keyof typeof mapping]] = bool(flag);
+    if (values.skill) options.skills = values.skill as string[];
+    if (str("lock-backend")) {
+      if (!["mkdir", "flock"].includes(str("lock-backend")!)) fail("USAGE", "Unknown lock backend");
+      options.lockBackend = str("lock-backend") as "mkdir" | "flock";
     }
-    if (values["keep-current"] !== undefined) options.keepCurrent = values["keep-current"];
-    if (values.adapter !== undefined) {
-      if (!["filesystem", "grok"].includes(values.adapter))
-        throw new SkilltreeError("USAGE", "Unknown adapter");
-      options.adapter = values.adapter as "filesystem" | "grok";
+    if (str("adapter")) {
+      if (!["filesystem", "grok"].includes(str("adapter")!)) fail("USAGE", "Unknown adapter");
+      options.adapter = str("adapter") as "filesystem" | "grok";
     }
-    if (values.storage !== undefined) options.transactionStorage = values.storage;
-    if (values["runtime-root"] !== undefined) options.runtimeRoot = values["runtime-root"];
-    if (values["quiet-host"] !== undefined) options.quietHost = values["quiet-host"];
-    if (values["retained-directories"] !== undefined)
-      options.retainedDirectories = values["retained-directories"];
-    if (values["backup-scratch"] !== undefined) options.backupScratch = values["backup-scratch"];
-    if (values.caches !== undefined) options.caches = values.caches;
-    if (values.scratch !== undefined) options.scratch = values.scratch;
-    if (values["retain-backups"] !== undefined)
-      options.retainBackups = Number(values["retain-backups"]);
-    if (values["host-metadata"] !== undefined) options.hostMetadata = values["host-metadata"];
-    if (values.dest !== undefined) options.destination = values.dest;
-    if (values.install !== undefined) options.install = values.install;
-    if (values.unlock !== undefined) options.unlock = values.unlock;
-    if (values["dry-run"] !== undefined) options.dryRun = values["dry-run"];
-    if (values["exclusive-dest"] !== undefined) options.exclusive = values["exclusive-dest"];
-    const result = execute(values.home, command, positionals.slice(1), options);
+    if (str("storage")) options.transactionStorage = str("storage")!;
+    if (str("runtime-root")) options.runtimeRoot = str("runtime-root")!;
+    if (str("dest")) options.destination = str("dest")!;
+    if (str("retain-backups")) options.retainBackups = Number(str("retain-backups"));
+    if (command === "snapshot") {
+      if (operands[0] === "list") {
+        if (operands.length !== 1 || bool("backup")) fail("USAGE", "snapshot list takes no IDs");
+        command = "backups";
+        operands = [];
+      } else if (operands[0] === "restore") {
+        if (operands.length !== 2 || bool("backup"))
+          fail("USAGE", "snapshot restore requires one recovery point ID");
+        options.snapshot = operands[1]!;
+        command = "revert";
+        operands = [];
+      } else if (bool("backup")) {
+        if (operands.length) fail("USAGE", "snapshot --backup takes no skill IDs");
+        command = "backup";
+      } else {
+        if (operands.length !== 1)
+          fail(
+            "USAGE",
+            "snapshot requires a skill ID or an explicit backup/list/restore operation",
+          );
+        command = "capture";
+      }
+    }
+    const result =
+      command === "init"
+        ? scaffold(operands[0], bool("dry-run"))
+        : execute(stateHome(str("home")), command, operands, options);
     console.log(JSON.stringify(result, null, 2));
     const output = result as { outcome?: string; result?: { outcome?: string } };
-    const outcome = output.outcome ?? output.result?.outcome;
-    return outcome === "DRIFT" || outcome === "ERROR" || outcome === "PARTIAL" ? 1 : 0;
+    return ["DRIFT", "ERROR", "PARTIAL"].includes(output.outcome ?? output.result?.outcome ?? "")
+      ? 1
+      : 0;
   } catch (error) {
     const code = error instanceof SkilltreeError ? error.code : "ERROR";
-    // Do not echo subprocess stderr, credentials, or arbitrary source data.
     const message =
       error instanceof SkilltreeError
         ? error.message

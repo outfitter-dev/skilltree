@@ -47,7 +47,7 @@ function cli(args: string[]) {
   return result;
 }
 cli([
-  "init",
+  "setup",
   "--dest",
   dest,
   "--exclusive-dest",
@@ -57,37 +57,36 @@ cli([
   join(root, "runtime"),
 ]);
 cli(["add", repo, "--source", "demo", "--ref", "main"]);
-cli(["inventory", "demo"]);
+cli(["add", repo, "--list"]);
 cli([
-  "select",
+  "add",
+  repo,
+  "--source",
   "demo",
-  "--path",
-  ".agents/skills/helper",
-  "--id",
+  "--skill",
   "helper",
   "--profile",
   "gardener",
-  "--install",
+  "--yes",
   "--reason",
   "Explicit demo install",
 ]);
 const target = join(dest, "helper/SKILL.md");
 fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace("First line", "Local first"));
 cli(["verify"]);
-cli(["capture", "helper"]);
+cli(["snapshot", "helper"]);
 fs.writeFileSync(
   join(skill, "SKILL.md"),
   fs.readFileSync(join(skill, "SKILL.md"), "utf8").replace("Last line", "Upstream last"),
 );
 git(repo, ["add", "--all"]);
 git(repo, ["commit", "-m", "upstream update"]);
-cli(["sync", "--dry-run"]);
-cli(["sync"]);
+cli(["plan", "helper", "--dry-run"]);
+cli(["update", "helper"]);
 const status = cli(["status"]);
 const digest = status.entries![0]!.candidate.hash;
-cli(["approve", "helper", "--hash", digest, "--reason", "Reviewed demo candidate"]);
-cli(["apply", "helper", "--hash", digest]);
-cli(["list", "--profile", "gardener"]);
+cli(["apply", "helper", "--hash", digest, "--reason", "Reviewed demo candidate"]);
+cli(["ls", "-a", "gardener", "--json"]);
 cli(["verify"]);
 cli(["doctor"]);
 const final = fs.readFileSync(target, "utf8");
@@ -101,4 +100,19 @@ if (
 )
   throw new Error("Repository symlink text changed during acquisition");
 console.log("repository: relative symlinks preserved");
+const point = cli(["snapshot", "--backup", "--reason", "Demo reversible removal"]) as {
+  result: { snapshot: string };
+};
+cli(["remove", "--skill", "helper"]);
+const removalHash = cli(["status"]).entries![0]!.candidate.hash;
+cli(["apply", "helper", "--hash", removalHash, "--reason", "Explicit demo removal"]);
+if (fs.existsSync(target)) throw new Error("Demo removal did not retire the owned target");
+const preview = cli(["snapshot", "restore", point.result.snapshot, "--dry-run"]) as {
+  expected: string;
+};
+cli(["snapshot", "restore", point.result.snapshot, "--expect", preview.expected, "--quiet-host"]);
+cli(["verify"]);
+if (fs.readFileSync(target, "utf8") !== final)
+  throw new Error("Snapshot restore lost removed content");
+console.log("removal: exact approval, complete backup and snapshot restoration verified");
 console.log(`Retained isolated demo: ${root}`);

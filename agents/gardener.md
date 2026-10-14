@@ -2,16 +2,16 @@
 
 This is a bundled profile, not an installed agent or scheduled routine. Use the configured canonical library and durable Skilltree state. Primary-agent integration is optional.
 
-I stage updates with `sync`, inspect the complete candidate and triage reasons, and apply only an exactly approved hash. Capture owner-requested library edits into per-skill generated history. Source observations, local history, approvals and deployed content are separate records. Profiles do not isolate access. Safety triage is not a safety guarantee.
+I stage updates with `plan`, inspect the complete candidate and triage reasons, and apply only an exactly approved hash. Capture owner-requested library edits into per-skill generated history. Source observations, local history, approvals and deployed content are separate records. Profiles do not isolate access. Safety triage is not a safety guarantee.
 
 Before an actual update, Skilltree must publish and verify a whole-directory recovery point. It covers supported existing entries, including outside-lock skills and host-owned files. Record the returned `recoveryPoint` ID in the run report. If complete backup fails, stop; do not bypass it or use broad cleanup.
 
 For recovery, inspect these actual commands:
 
 ```sh
-skilltree backups --home /absolute/state
-skilltree revert --home /absolute/state --snapshot <recovery-point-id> --dry-run
-skilltree revert --home /absolute/state --snapshot <recovery-point-id> --expect <reviewed-current-hash> --quiet-host
+skilltree snapshot list --home /absolute/state
+skilltree snapshot restore <recovery-point-id> --home /absolute/state --dry-run
+skilltree snapshot restore <recovery-point-id> --home /absolute/state --expect <reviewed-current-hash> --quiet-host
 skilltree recover --home /absolute/state --dry-run
 skilltree recover --home /absolute/state --quiet-host
 ```
@@ -44,3 +44,11 @@ Record `skilltree --version` in verification reports and compare its revision/so
 Inspect doctor's `backupScratch` candidates/holds after an interruption. Durable reservations precede disposable intent/blob creation; reserved empty artifacts can be cleaned explicitly, but incomplete nonempty intent or journal bytes and unowned data remain held. Do not promise zero remaining artifacts or truncate unknown journal data. Rootless namespaces that map system-root Python to UID 65534 fail the unchanged trust check; do not bypass it or configure an alternate interpreter.
 
 For an empty, partial or full scratch journal, inspect `recover --scratch --dry-run` and review its journal hash, carried ownership and preserved unknowns. Actual `recover --scratch --expect <hash>` seals all original bytes under the collection lock and refuses recognized active owners. Retry pending repair through the same command; never truncate unknown bytes. Resolve OS file-size, disk and quota limits first. Doctor warns near capacity, reports unusable capacity and exposes retained stages missing receipts. Sealed evidence is preserved indefinitely; unknown physical scratch still holds. This does not control host writers or relax interpreter trust.
+
+## Compatible commands and reversible removal
+
+Home resolution is explicit `--home`, then `SKILLTREE_HOME`, then `/workspace/skilltree`; always choose temporary homes for fixtures. `setup --dest` initializes coordinated state, while `init <name>` scaffolds only a new skill directory. `add --list` discovers without registration. Multiple `--skill` names or `'*'` stage HELD exact hashes. Duplicate projections and ambiguous source/skill names require disambiguation; never guess. `--all` selects only and grants no approval.
+
+Use `plan [ids...]` to fetch/reconcile/stage. `plan --yes --reason` or `add --yes/--install --reason` requires corresponding explicit user authorization and uses guarded apply. For deliberate removals, `remove --skill <ids...>` stages complete destination-bound hashes. Review those hashes, then `apply <id> --hash <removal-hash> --reason <request>`. Keep the returned full recovery point and retained directory. `remove --source <id> --force` only stages dependent removals; it cannot bypass ownership, local drift/conflicts, backup failure or approval. Sources/state remain until guarded completion, and snapshots can restore removed selections.
+
+Legacy commands remain until 0.2 with one stderr deprecation note and unchanged stdout JSON. Legacy approve/apply remains supported. The new snapshot backup/list/restore forms preserve expected-hash and quiet-host gates. `recover` is a hidden escape hatch. Before a write, `--quiet-host` may allow automatic recovery only when journals, retained bytes and ownership prove the outcome; changed or ambiguous evidence holds. Never infer that this attestation controls the host or automatically steals a lock.
