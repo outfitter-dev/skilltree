@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { chooseSkills, selectedIds, sourceId } from "../src/source-selection";
 import { discover } from "../src/discovery";
 import { execute } from "../src/service";
-import { load } from "../src/state";
+import { load, save } from "../src/state";
 import { git } from "../src/git";
 import { fixture, authoritative, commit, install } from "./helpers";
 
@@ -87,6 +87,52 @@ test("restore preview refuses reused source identities without mutating state or
     );
     expect(authoritative(f.home)).toBe(before);
     expect(fs.readdirSync(f.dest)).toEqual([]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("restore brings back removed selections when a source ID is re-added with an equivalent GitHub URL", () => {
+  const f = fixture();
+  try {
+    install(f.home);
+    let ctx = load(f.home);
+    ctx.lock.sources[0]!.repository = "https://github.com/Owner/Repo.git";
+    save(ctx);
+    const point = (execute(f.home, "backup", []) as { result: { snapshot: string } }).result;
+    ctx = load(f.home);
+    ctx.lock.entries = [];
+    ctx.lock.sources[0]!.repository = "https://github.com/owner/repo";
+    save(ctx);
+    const before = authoritative(f.home);
+    expect(execute(f.home, "revert", [], { snapshot: point.snapshot, dryRun: true })).toMatchObject(
+      { outcome: "WOULD_REVERT", snapshot: point.snapshot },
+    );
+    expect(authoritative(f.home)).toBe(before);
+    ctx = load(f.home);
+    ctx.lock.sources[0]!.repository = "https://github.com/other/project.git";
+    save(ctx);
+    const different = authoritative(f.home);
+    expect(() => execute(f.home, "revert", [], { snapshot: point.snapshot, dryRun: true })).toThrow(
+      "reused for another repository",
+    );
+    expect(authoritative(f.home)).toBe(different);
+    ctx = load(f.home);
+    ctx.lock.sources[0]!.repository = "https://github.com/owner/repo";
+    save(ctx);
+    const preview = execute(f.home, "revert", [], {
+      snapshot: point.snapshot,
+      dryRun: true,
+    }) as { expected: string };
+    const restored = execute(f.home, "revert", [], {
+      snapshot: point.snapshot,
+      expect: preview.expected,
+      quietHost: true,
+    }) as { result: { outcome: string } };
+    expect(restored.result.outcome).toBe("REVERTED");
+    const lock = load(f.home).lock;
+    expect(lock.entries.map((entry) => entry.id)).toEqual(["helper"]);
+    expect(lock.sources[0]!.repository).toBe("https://github.com/owner/repo");
   } finally {
     f.cleanup();
   }

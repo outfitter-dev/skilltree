@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { checkMetadata, mountId, mountTable, sameMount } from "./filesystem-capabilities";
 import { z } from "zod";
 import { fail, hash, lockSchema, type Lock } from "./model";
+import { sameRepository } from "./source-selection";
 import {
   assertNoSymlinks,
   atomicJson,
@@ -344,7 +345,7 @@ function restoredOwnership(ctx: Context, target: Snapshot): Lock {
   const next = lockSchema.parse(ctx.lock);
   for (const oldSource of target.lock.sources) {
     const currentSource = next.sources.find((s) => s.id === oldSource.id);
-    if (currentSource && currentSource.repository !== oldSource.repository)
+    if (currentSource && !sameRepository(currentSource.repository, oldSource.repository))
       fail("REVERT_AMBIGUOUS", "Removed source ID was reused for another repository");
     if (!currentSource) next.sources.push(oldSource);
   }
@@ -355,7 +356,7 @@ function restoredOwnership(ctx: Context, target: Snapshot): Lock {
     if (next.entries.some((e) => e.id === entry.id)) continue;
     const oldSource = target.lock.sources.find((s) => s.id === entry.source)!;
     const currentSource = next.sources.find((s) => s.id === entry.source);
-    if (currentSource && currentSource.repository !== oldSource.repository)
+    if (currentSource && !sameRepository(currentSource.repository, oldSource.repository))
       fail("REVERT_AMBIGUOUS", "Removed source ID was reused for another repository");
     if (!currentSource) next.sources.push(oldSource);
     next.entries.push(entry);
