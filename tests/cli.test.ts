@@ -14,7 +14,8 @@ test("help describes the lifecycle and limits", async () => {
   for (const args of [[], ["--help"], ["-h"]]) {
     const result = await run(args);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("sync");
+    expect(result.stdout).toContain("plan");
+    expect(result.stdout).not.toMatch(/^recover\s/m);
     expect(result.stdout).toContain("catalog refresh are not verified");
     expect(result.stderr).toBe("");
   }
@@ -24,7 +25,7 @@ test("invalid command, unknown flags, and missing state fail without executing",
     const result = await run(args);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).toBe("");
-    expect(JSON.parse(result.stderr).outcome).toBeDefined();
+    expect(JSON.parse(result.stderr.trim().split("\n").at(-1)!).outcome).toBeDefined();
   }
 });
 

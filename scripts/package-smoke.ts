@@ -51,7 +51,7 @@ const standalone = (args: string[]) =>
       encoding: "utf8",
     }),
   );
-standalone(["init", "--dest", join(root, "standalone-library"), "--exclusive-dest"]);
+standalone(["setup", "--dest", join(root, "standalone-library"), "--exclusive-dest"]);
 standalone(["verify"]);
 const diagnostics = standalone(["doctor"]);
 if (diagnostics.outcome !== "OK")

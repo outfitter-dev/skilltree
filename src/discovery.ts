@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { join, relative, resolve, dirname, posix } from "node:path";
 import { parseDocument } from "yaml";
 import { z } from "zod";
-import { fail, relativePath, SkilltreeError, type Tree } from "./model";
+import { fail, relativePath, skillPath, SkilltreeError, type Tree } from "./model";
 import { assertNoSymlinks, exists, inside, readTree, treeHash } from "./files";
 
 export interface Skill {
@@ -70,7 +70,7 @@ export function metadataTree(tree: Tree): { name: string; description: string } 
   }
   return meta.data;
 }
-export function discover(root: string): Discovery {
+export function discover(root: string, fullDepth = false): Discovery {
   // The acquired root is a source-wide safety boundary. Only known projection
   // validation failures below it are isolated; I/O and unexpected failures abort.
   assertNoSymlinks(root);
@@ -106,7 +106,7 @@ export function discover(root: string): Discovery {
       });
   }
   function scan(dir: string, format: string) {
-    const path = relative(root, dir);
+    const path = relative(root, dir) || ".";
     // Conventional roots and Claude plugin paths can name the same tree.
     // Repeating the walk would record failed skills and symlink holds twice.
     if (scanned.has(path)) return;
@@ -119,9 +119,9 @@ export function discover(root: string): Discovery {
         fail("UNSAFE_TREE", "Skill projection is not a directory");
       if (exists(join(dir, "SKILL.md"))) {
         checked(path, "skill", () => {
-          if (!relativePath.safeParse(path).success) fail("UNSAFE_PATH", "Unsupported skill path");
+          if (!skillPath.safeParse(path).success) fail("UNSAFE_PATH", "Unsupported skill path");
           if (!found.has(path)) {
-            const tree = readTree(dir);
+            const tree = readTree(dir, path === ".");
             found.set(path, {
               path,
               ...metadataTree(tree),
@@ -132,7 +132,7 @@ export function discover(root: string): Discovery {
             });
           }
         });
-        return;
+        if (!fullDepth) return;
       }
       for (const entry of fs
         .readdirSync(dir, { withFileTypes: true })
@@ -149,11 +149,14 @@ export function discover(root: string): Discovery {
       }
     });
   }
-  for (const path of [".agents/skills", ".claude/skills", "skills"])
-    scan(join(root, path), "plain");
+  const rootSkill = exists(join(root, "SKILL.md"));
+  if (rootSkill) scan(root, "plain");
+  if (!rootSkill || fullDepth)
+    for (const path of [".agents/skills", ".claude/skills", "skills"])
+      scan(join(root, path), "plain");
   const pluginPath = ".claude-plugin/plugin.json";
   const plugin = join(root, pluginPath);
-  if (exists(plugin)) {
+  if (exists(plugin) && (!rootSkill || fullDepth)) {
     checked(pluginPath, "projection", () => {
       assertNoSymlinks(plugin);
       let config: { skills?: string[] | undefined };

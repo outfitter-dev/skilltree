@@ -19,6 +19,7 @@ import { pending, save, type Context } from "./state";
 import { localPath, preflightLocal, recordLocal } from "./git";
 
 import { archiveRepository } from "./archives";
+import { applyRemoval, recoverRemoval } from "./removal";
 
 export function expectedLive(entry: Entry): string | null {
   return entry.observed ?? entry.deployed?.hash ?? null;
@@ -87,6 +88,9 @@ export function applyEntry(
   dryRun: boolean,
   afterBackup?: () => void,
 ): unknown {
+  if (entry.removal) return applyRemoval(ctx, entry, requestedHash, dryRun, afterBackup);
+  if (entry.outcome === "CONFLICT" || entry.outcome === "DRIFT")
+    fail(entry.outcome, "Reconcile the held selection before applying");
   if (!entry.candidate || entry.candidate.hash !== requestedHash)
     fail("STALE_CANDIDATE", "Requested hash is not the current staged candidate");
   if (entry.approval?.hash !== requestedHash)
@@ -143,6 +147,8 @@ export function applyEntry(
     id: entry.id,
     oldHash,
     next,
+    recoveryPoint: recoveryPoint.id,
+    configuration: createHash("sha256").update(JSON.stringify(ctx.manifest)).digest("hex"),
   };
   atomicJson(join(ctx.home, "transaction.json"), journal);
   writeTree(p.stage, tree);
@@ -182,6 +188,7 @@ export function applyEntry(
 export function recover(ctx: Context, dryRun: boolean): unknown {
   let journal = pending(ctx);
   if (!journal) return { outcome: "CURRENT", message: "No interrupted replacement" };
+  if (journal.version === 4) return recoverRemoval(ctx, dryRun);
   const target = targetPath(ctx, journal.id);
   const nextHash = journal.next.deployed?.hash;
   if (

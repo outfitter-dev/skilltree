@@ -342,6 +342,24 @@ function diff(before: DirectoryTree, after: DirectoryTree): unknown {
 }
 function nextLock(ctx: Context, target: Snapshot, stage: string): Lock {
   const next = lockSchema.parse(ctx.lock);
+  for (const oldSource of target.lock.sources) {
+    const currentSource = next.sources.find((s) => s.id === oldSource.id);
+    if (currentSource && currentSource.repository !== oldSource.repository)
+      fail("REVERT_AMBIGUOUS", "Removed source ID was reused for another repository");
+    if (!currentSource) next.sources.push(oldSource);
+  }
+  // A guarded removal retires ownership only after retaining a complete point.
+  // Restoring that point must bring its selections back without discarding newer
+  // sources or local history belonging to selections which still exist.
+  for (const entry of target.lock.entries) {
+    if (next.entries.some((e) => e.id === entry.id)) continue;
+    const oldSource = target.lock.sources.find((s) => s.id === entry.source)!;
+    const currentSource = next.sources.find((s) => s.id === entry.source);
+    if (currentSource && currentSource.repository !== oldSource.repository)
+      fail("REVERT_AMBIGUOUS", "Removed source ID was reused for another repository");
+    if (!currentSource) next.sources.push(oldSource);
+    next.entries.push(entry);
+  }
   next.entries = next.entries.map((entry) => {
     const old = target.lock.entries.find((e) => e.id === entry.id);
     if (old && (old.source !== entry.source || old.path !== entry.path || old.name !== entry.name))
@@ -353,6 +371,7 @@ function nextLock(ctx: Context, target: Snapshot, stage: string): Lock {
       deployedBase: old?.deployedBase ?? null,
       candidate: null,
       approval: null,
+      removal: undefined,
       outcome: "HELD" as const,
       reasons: [
         "Library reverted; current source/local history retained. Sync and review before applying again.",

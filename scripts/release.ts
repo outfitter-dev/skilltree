@@ -107,6 +107,7 @@ function stage() {
     "bin/skilltree.mjs",
     "dist/cli.mjs",
     "docs/implementation-plan.md",
+    "docs/command-parity.md",
     "docs/releases.md",
     "docs/grok-bot/architecture-and-gaps.md",
     "docs/grok-bot/bot-profile.md",

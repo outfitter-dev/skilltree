@@ -4,11 +4,11 @@ Skilltree synchronizes selected skills from Git repositories into one shared lib
 
 ## Status
 
-`@outfitter/skilltree@0.1.0-rc.0` is the initial published npm release candidate. The filesystem workflow is implemented and tested in isolated fixtures. Live Grok deployment, host catalog pickup, and Cursor/ChatGPT plugin ingestion remain unverified or unsupported.
+`@outfitter/skilltree@0.1.0-rc.1` is the verified published npm release candidate on the `rc` dist-tag. `latest` currently remains `0.1.0-rc.0`; release promotion is a separate reviewed decision. The filesystem workflow is implemented and tested in isolated fixtures. Live Grok deployment, host catalog pickup, and Cursor/ChatGPT plugin ingestion remain unverified or unsupported.
 
-The source checkout includes follow-up fixes for isolated discovery holds and large-file validation that await the next candidate; the published `0.1.0-rc.0` does not include them.
+RC1 includes isolated discovery holds and large-file validation fixes. This source checkout adds command compatibility and reversible removals for the next candidate; those additions are not published merely because they are present here.
 
-The CLI provides Git acquisition, normalized inventory, explicit selection, shared profile assignments, local-edit capture, three-way reconciliation, staging, exact-hash approval, apply, verification, diagnostics, and interrupted-replacement recovery. `sync` stages only; it never grants approval or deploys automatically.
+The CLI provides Git acquisition, normalized inventory, explicit selection, shared profile assignments, local-edit capture, three-way reconciliation, staging, exact-hash approval, apply, verification, diagnostics, and interrupted-replacement recovery. `plan` stages by default. Only explicit `--yes`/`--install` with a reason can activate its exact staged candidates through guarded apply. `--all` only selects; it supplies no approval.
 
 ## Getting started
 
@@ -23,34 +23,51 @@ bun run dev -- --help
 Choose durable state and destination paths separately from the source checkout and disposable runner. Paths must be canonical and free of symlink components. Sources must be committed Git repositories.
 
 ```sh
-bun run dev -- init --home /absolute/collection --dest /absolute/shared-skills --exclusive-dest
-bun run dev -- add owner/repo --home /absolute/collection --source upstream --ref main
-bun run dev -- inventory upstream --home /absolute/collection
-bun run dev -- select upstream --home /absolute/collection --path .agents/skills/example --id example --profile gardener --install --reason 'User requested this specific installation'
+bun run dev -- setup --home /absolute/collection --dest /absolute/shared-skills --exclusive-dest
+bun run dev -- add owner/repo --home /absolute/collection --list
+bun run dev -- add owner/repo --home /absolute/collection --source upstream --ref main --skill example --profile gardener --yes --reason 'User requested this specific installation'
 bun run dev -- list --home /absolute/collection --profile gardener
 bun run dev -- verify --home /absolute/collection
 ```
 
-`select --install` records the specific installation request against the complete selected snapshot and applies it without a redundant approval command. It assumes an authorized operator: automated callers must have the corresponding user authorization. Registration with `add` or discovery alone never supplies installation approval. Without `--install`, selection is held for review.
+`add --skill <name> --yes --reason <request>` records the specific installation request against the complete selected snapshot and uses the same backed-up apply path. It assumes an authorized operator: automated callers must have the corresponding user authorization. Registration with `add` or discovery alone never supplies installation approval. Without both explicit `--yes`/`--install` and a nonempty reason, selection is HELD with its exact candidate hash. `--skill`/`-s` accepts multiple names or `'*'`; duplicate names never pick a projection implicitly. Use an exact skill path or `--id` for a single custom destination. `owner/repo@skill` qualifies repository selection. `--source` remains an explicit override; otherwise its lowercase owner/repo-based ID is derived. `--full-depth` searches below root skills. `add --list` clones into disposable scratch for discovery and never registers a source or writes library state.
+
+## Command compatibility and safe removal
+
+`--home` is optional: the explicit flag wins over `SKILLTREE_HOME`, then the Grok adapter default is `/workspace/skilltree`. Tests and scratch workflows should keep an explicit temporary home. `init <name>` creates a new `<name>/SKILL.md`; it refuses existing paths. Bare `init` requires a name and never chooses a live destination. State initialization is `setup --dest ... --exclusive-dest`.
+
+Aliases are `a` (`add`), `ls` (`list`), `rm` (`remove`) and `update`/`upgrade` (`plan`). `list --json` is accepted because output is already JSON; `list -a` filters profile metadata. Unsupported agent/scope flags consume their values and warn on stderr. `-h`, `-v`, and command help are supported. Search/use proxies, experimental lock ingestion and Skillset integration remain deferred.
+
+```sh
+skilltree plan example --home /absolute/collection
+skilltree apply example --home /absolute/collection --hash <candidate-hash> --reason 'Reviewed complete content'
+skilltree remove --skill example --home /absolute/collection
+skilltree apply example --home /absolute/collection --hash <removal-hash> --reason 'Owner requested removal'
+```
+
+Removal hashes bind the owned selection and its complete destination, including host metadata. Staging retains the selection, source, local histories and deployed bytes. Actual removal verifies a full-library recovery point, retains the moved directory outside the catalog, and retires ownership only after the journaled operation completes. `snapshot restore` can restore the removed selection and its bytes. Drift, conflicts, unknown ownership or failed backups hold the operation. `remove --all` selects all owned entries and never authorizes deployment.
+
+`remove --source <source-id>` refuses selected skills. `--force` stages their guarded removals and keeps the source until the last one completes; it does not relax approval, hash, ownership, backup or recovery gates. An unused source can be removed with its verified recovery point and retained archives. Ambiguous positional source/skill names require `--source` or `--skill`.
+
+Until 0.2, `select`, `inventory`, `init --dest`, `sync`, `approve`, `capture`, `backup`, `backups` and `revert` retain their stdout JSON contracts and print one deprecation line on stderr. Legacy `approve --hash --reason` followed by `apply --hash` still works. `sync` remains staging only. `recover` remains available through command help but is hidden from primary help. Recognized interrupted transactions can recover before a write with `--quiet-host` after stopping all host writers; ambiguous or changed ownership/bytes stop for inspection. No lock is stolen automatically.
 
 ## Updates and local edits
 
-The library is shared; profile filtering is metadata, not access isolation. Optional `--gardener` and `--primary` on `init` record configurable profile metadata. No agents, messages, routines, or integrations are started.
+The library is shared; profile filtering is metadata, not access isolation. Optional `--gardener` and `--primary` on `setup` record configurable profile metadata. No agents, messages, routines, or integrations are started.
 
-When an owned deployed skill has local edits, `verify` reports drift. Explicitly adopt those edits with `capture` before syncing. Capture clears the candidate; sync must reconcile and restage before approval:
+When an owned deployed skill has local edits, `verify` reports drift. Explicitly adopt those edits with `snapshot <id>` before planning. Snapshot adoption clears the candidate; plan must reconcile and restage before approval:
 
 ```sh
-bun run dev -- capture example --home /absolute/collection
-bun run dev -- sync --home /absolute/collection --dry-run
-bun run dev -- sync --home /absolute/collection
+bun run dev -- snapshot example --home /absolute/collection
+bun run dev -- plan --home /absolute/collection --dry-run
+bun run dev -- plan --home /absolute/collection
 bun run dev -- status --home /absolute/collection
 ```
 
 Review the `candidate.hash`, complete content object, reasons, and local/upstream changes in the JSON status and durable objects. Then name that exact hash:
 
 ```sh
-bun run dev -- approve example --home /absolute/collection --hash <candidate-hash> --reason 'Reviewed the complete content and dependencies'
-bun run dev -- apply example --home /absolute/collection --hash <candidate-hash>
+bun run dev -- apply example --home /absolute/collection --hash <candidate-hash> --reason 'Reviewed the complete content and dependencies'
 ```
 
 Hashes include every skill file's path, bytes, and executable bit. Changing a supporting script changes approval scope. Git three-way file merges retain nonconflicting local changes; conflicting or removed selected skills are held. A changed candidate cannot use a stale approval. Manual policy is the only unattended-update policy in this candidate; authority never expands automatically.
@@ -63,7 +80,7 @@ Triage flags changed scripts and potentially sensitive instructions. It prioriti
 - `skilltree.lock`: selections and profiles; distinct upstream, local base/hash/Git commit, candidate, approval, observed local baseline, and last deployment records.
 - `objects/`: immutable complete file snapshots, checked against their SHA-256 on use.
 - `repos/`: acquired Git sources; do not treat them as local edit workspaces. Sync fetches and validates in scratch, copies new checkout generations, then atomically publishes their references in the lock. Accepted checkouts are never advanced in place; unchanged syncs reuse their verified generation. Prior or interrupted generations are retained; there is no automatic cleanup.
-- `edits/`: local Git histories. `capture` records local library edits here; ignored and untracked files, hidden index flags, and changed bytes or modes are preserved and block capture/apply. History updates replace only files owned by a verified recorded snapshot.
+- `edits/`: local Git histories. `snapshot <id>` records local library edits here; ignored and untracked files, hidden index flags, and changed bytes or modes are preserved and block capture/apply. History updates replace only files owned by a verified recorded snapshot.
 - `archives/`, `archive-objects/`, `git-objects/`: digest-bound archive manifests, deduplicated durable Git objects and shared derived Git object storage. File-based objects avoid excluded directory names inside committed sources.
 - `reports/`: per-write JSON receipts with run IDs.
 - `transaction.json`: interrupted per-skill replacement journal, when present.
@@ -72,7 +89,7 @@ Keep the entire state directory, including archives, objects and local history, 
 
 Apply stages and retains backups in owned `.skilltree-storage-<destination-hash>` storage beside the destination, outside its catalog tree and on the same filesystem. Version 1 journal-owned transactions relocate intact through a restartable location journal before recovery. Completed legacy backups recognized by successful deployment reports can move intact with `migrate-storage`; unknown folders remain retained. `doctor` reports catalog-visible legacy data as errors and empty folders as warnings and nonempty unrecognized catalog folders as errors. Transactions cover one skill. No backup/history garbage collector is enabled.
 
-New Linux collections use util-linux `flock` on a stable destination-keyed `sync.lock` under `~/.local/state/skilltree`, independent of `TMPDIR`. `--runtime-root` chooses an explicit coordinated domain; tests and demos keep it inside their own fixture. Git children inherit the lock descriptor, retaining exclusion if they outlive the parent. Kernel locks release on final descriptor closure. macOS and legacy collections use explicit stale-recovered directory locking; `init --lock-backend mkdir|flock` chooses the backend. Stop older versions before upgrading locking domains. Runtime directory deletion while writers run invalidates coordination; platform lifetime still needs host verification. These locks coordinate Skilltree writers, not host applications. `configure` can upgrade mkdir to flock, but rejects flock-to-mkdir downgrade before changing the manifest. A collection left on mkdir by an older downgrade can explicitly restore flock with `configure --lock-backend flock`; this acquires the existing kernel domain and retains active kernel/directory writer guards. Do not delete the stable kernel lock inode to bypass those guards.
+New Linux collections use util-linux `flock` on a stable destination-keyed `sync.lock` under `~/.local/state/skilltree`, independent of `TMPDIR`. `--runtime-root` chooses an explicit coordinated domain; tests and demos keep it inside their own fixture. Git children inherit the lock descriptor, retaining exclusion if they outlive the parent. Kernel locks release on final descriptor closure. macOS and legacy collections use explicit stale-recovered directory locking; `setup --lock-backend mkdir|flock` chooses the backend. Stop older versions before upgrading locking domains. Runtime directory deletion while writers run invalidates coordination; platform lifetime still needs host verification. These locks coordinate Skilltree writers, not host applications. `configure` can upgrade mkdir to flock, but rejects flock-to-mkdir downgrade before changing the manifest. A collection left on mkdir by an older downgrade can explicitly restore flock with `configure --lock-backend flock`; this acquires the existing kernel domain and retains active kernel/directory writer guards. Do not delete the stable kernel lock inode to bypass those guards.
 
 Use `init --adapter grok` for the isolated Grok filesystem preservation policy, which defaults ownership of root `workflow.md` and `runs.json`. Existing collections migrate with `configure --adapter grok`; plain filesystem collections can opt in with `configure --host-metadata`. An unsupported destination tree holds its affected skill rather than aborting other healthy selections. These regular files are excluded from skill hashes/capture and preserved through replacement and backups. Skill-authored reserved names remain rejected; unowned host directories are never adopted. Other host files or symlinks hold for explicit adapter reconciliation.
 
@@ -161,8 +178,8 @@ bun run build:compile
 ./dist/bin/skilltree-darwin-arm64 --help  # example native target
 node bin/skilltree.mjs --help
 npm pack --ignore-scripts
-npx --yes --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
-bunx --package ./outfitter-skilltree-0.1.0-rc.0.tgz skilltree --help
+npx --yes --package ./outfitter-skilltree-0.1.0-rc.1.tgz skilltree --help
+bunx --package ./outfitter-skilltree-0.1.0-rc.1.tgz skilltree --help
 ```
 
 The Node launcher selects a prepared matching native binary when present, otherwise the bundled Node CLI. The npm tarball includes only the portable Node bundle; native binaries remain optional checkout/standalone artifacts. Build the portable bundle before staging a package. Build artifacts are disposable; `--home` always supplies durable state. Git remains an external prerequisite. The accepted local milestone was verified on Node 20.19.2/macOS arm64. The separate assessment workflow tests Linux x64 portable/native execution and isolated runner restore. These are compatibility fixtures; no Grok host or universal runtime guarantee is made. The initial candidate is published; registry availability of later versions must be verified before advertising them. Direct source-checkout publication is blocked in favor of the reviewed release workflow. See [package releases](docs/releases.md).

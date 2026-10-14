@@ -1,6 +1,6 @@
 # Package releases
 
-Skilltree follows the Changesets version-PR and policy-gated npm workflow used by Skillset and Trails. The initial candidate remains `@outfitter/skilltree@0.1.0-rc.0`; public publication is not established by a successful local tarball test.
+Skilltree follows the Changesets version-PR and policy-gated npm workflow used by Skillset and Trails. The verified current release candidate is `@outfitter/skilltree@0.1.0-rc.1` on `rc`; `latest` remains `0.1.0-rc.0`. Public publication is not established by a local tarball test or a merged source/version PR. The one-time RC0 bootstrap is historical; subsequent candidates use the reviewed OIDC workflow below.
 
 ## Package contract
 

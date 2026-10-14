@@ -27,6 +27,7 @@ export const relativePath = z
         .every((s) => s !== ".." && s !== "." && s !== "" && s !== ".git" && s !== "__proto__"),
     "unsafe relative path",
   );
+export const skillPath = z.union([z.literal("."), relativePath]);
 export const fileSchema = z
   .object({
     // Avoid a repeated fixed-length group: V8 exhausts its regexp stack on supported
@@ -60,11 +61,29 @@ const approval = z
     at: z.string(),
   })
   .strict();
+const entryOutcome = z.enum(["STAGED", "HELD", "CONFLICT", "DRIFT", "CURRENT", "UPDATED"]);
+const removal = z
+  .object({
+    hash,
+    basis: hash,
+    expected: hash.nullable(),
+    directory: hash,
+    retireSource: z.boolean(),
+    previous: z
+      .object({
+        candidate: version.nullable(),
+        approval: approval.nullable(),
+        outcome: entryOutcome,
+        reasons: z.array(z.string()),
+      })
+      .strict(),
+  })
+  .strict();
 export const entrySchema = z
   .object({
     id: slug,
     source: slug,
-    path: relativePath,
+    path: skillPath,
     name: z.string().min(1),
     profiles: z.array(slug),
     upstream: version,
@@ -79,11 +98,12 @@ export const entrySchema = z
       .strict()
       .nullable(),
     candidate: version.nullable(),
+    removal: removal.optional(),
     approval: approval.nullable(),
     deployed: version.nullable(),
     observed: hash.nullable(),
     deployedBase: hash.nullable(),
-    outcome: z.enum(["STAGED", "HELD", "CONFLICT", "DRIFT", "CURRENT", "UPDATED"]),
+    outcome: entryOutcome,
     reasons: z.array(z.string()),
   })
   .strict();
@@ -96,6 +116,7 @@ export const sourceSchema = z
     revision: z.string().regex(/^[a-f0-9]{40,64}$/),
     checkout: z.string().uuid().optional(),
     archive: hash.optional(),
+    fullDepth: z.boolean().optional(),
   })
   .strict();
 export type Source = z.infer<typeof sourceSchema>;
@@ -128,10 +149,27 @@ const journalFields = {
   id: slug,
   oldHash: hash.nullable(),
   next: entrySchema,
+  recoveryPoint: hash.optional(),
+  configuration: hash.optional(),
 };
 export const journalSchema = z.discriminatedUnion("version", [
   z.object({ version: z.literal(1), ...journalFields }).strict(),
   z.object({ version: z.literal(2), storage: z.string().min(1), ...journalFields }).strict(),
   z.object({ version: z.literal(3), storage: z.string().min(1), ...journalFields }).strict(),
+  z
+    .object({
+      version: z.literal(4),
+      ...journalFields,
+      storage: z.string().min(1),
+      collection: z.string().min(1),
+      destination: z.string().min(1),
+      before: hash,
+      configuration: hash,
+      nextLock: lockSchema,
+      recoveryPoint: hash,
+      directory: hash,
+      after: hash,
+    })
+    .strict(),
 ]);
 export type Journal = z.infer<typeof journalSchema>;
